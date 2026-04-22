@@ -1,0 +1,4 @@
+[project]
+name = "searchclient"
+version = "0.1.0"
+dependencies = ["psutil ==6.1.1"]
