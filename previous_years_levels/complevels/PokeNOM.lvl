@@ -1,0 +1,117 @@
+#domain
+hospital
+#levelname
+PokeNOM
+#colors
+blue: 2,P,O,K,E,M,N
+purple: I
+orange: F,4
+red: 0,R,8
+lightblue: C,5
+brown: U,1,7,B
+pink: G
+green: X,6
+grey: 3,A
+#initial
+++++++++++++++++++++++++++++++++++++++++++++++++++
++2            POKEMON      IEEI                  +
++                         IEFFEI                 +
++  IIIIIII    IIIII      IEFFEEIIII              +
++ IPPPPPPPI  IKKKKIIIIIIIEFFEIIINNNII    IIII III+
++IPFFFFFFFPI IKFFKIIKKKEEEEEEEEINFNNIIII IMMI IMM+
++PFFFFFPPFFPIIKFFFKKFFKFFFFFFFFENFFNNNNNIMFFMIMFF+
++PFFFFFP PFPIIKFFFKFFFKFFFFFEFFFEFFNFFFNIMFFFMFFF+
++0PPFFFPPFFP+++FFFFFFKFFFFFE EFEFFFNFFNNIMFFFMFFF+
++R  PFFFFFF+RRR+FFFFKKFFFFFFEFEEFFFFFFOFOMFFFFFFF+
++II PFFFFF+RR+RR+FFFKKKFFFFFFFFFEFFFFFOFFOFFFFFFF+
++ I PFFFFP+++C+++FFFFFKKFFFFFFFEFFFFFOOFOFOFMFMFF+
++ I  PFFFP+CC+CC+FKKFFFKEEEEEEEFFFFFFOFFOFOFMFMFF+
++ II PFFFPO+CCC+KFKOKKFFK      NFNFFFOFFFFOFMMMFF+
++  I  PFFPOO+++OKFKOOOKKK IIII NFNFFNNOOOOOFMOMFF+
++  II PFFP       KKK      I  I  NNNFFM     MOOMFF+
++   I  PFP IIIII     IIIIII  II    NNN III     MM+
++   II  P  I   IIIIIII        IIII     I IIIII U1+
++    II   II                     IIIIIII     II  +
++     IIIII                                   I  +
++     CF         ++++++                       III+
++              8+RRRRRR+               +++       +
++              +RRRRRRRR+            ++CCC++     +
++             ++ RRRRRRR+        G  +C+CCC+C+  G +
++           X+   3R+++++++      GGG+CCCCCCCCC+GGG+
++             ++RRRR++++++       G +CC+CCC+CC+ G +
++              +F+FF+FF+++          +CC+++CC+    +
++             6+F+FF+FF++            +CCCCC+     +
++              +FFFFFFF+              +++++      +
++               +FFFF++E+       ++               +
++               7++++++E+      ++A+ R            +
++              ++++++XX++      + AA+++  B++      +
++     +++     +AA+AA+XX+A+   ++ + BBBB+++AA+     +
++    +XXX+     +AA+++++AA+   +C++BBBBBB+ ++A+    +
++    +XXX+++    +++    ++    +CCE++B++B  ++A+    +
++  ++XUXXUXX++              +CCCCEE+E+B AAA+     +
++ +XXXUXXUXXXX+ ++         +ECCCCCEEE+BBAA+B+    +
+++XXXUXXXUXUXX++CC+        +CCCCE+EE+AAA++BB+    +
+++XXUXXXXXUXU++CCC+       +CCCCE+ EEE++F++ABB+AAA+
+++XXUXXXXXUX+ECCCC+       +CCCC++CEFE++EEE+AB+CEA+
++5AXUXXXX+++CEECECC+      + CCCCCEFF+A+CEE+AB+EA +
++C++++XXXACCCCCCCCE++      +CCCCFFF+A+CCCE+AA+A  +
++ +EEE+++E+CCCECCCE++       ++ FF++F+CECE+C+++   +
++ + E+EEEEEC++CECCCC+         +++FF+ CCE+CCE++   +
++  +++EE+EE  R+CCCCE+          ++FF++CC+CCCEE+   +
++     +EE+EC R+CCCE+           +++FF+ ++++CCE+   +
++     +EEE+EEEEEE++               ++F+F+ECCE++   +
++     +++++++++++                   ++++ CC ++   +
++                        4              +  +++   +
+++++++++++++++++++++++++++++++++++++++++++++++++++
+#goal
+++++++++++++++++++++++++++++++++++++++++++++++++++
++  POKENOM                                       +
++                                                +
++                                                +
++                                                +
++                                                +
++                                                +
++                                                +
++0          +++                                  +
++U         +   +                                 +
++         +  +  +                                +
++C        +++ +++                                +
++C        +  +  +                                +
++          +   +                                 +
++           +++                                  +
++                                                +
++                                                +
++                                                +
++                                                +
++                                              R1+
++                ++++++                          +
++               +      +               +++       +
++              +        +            ++   ++     +
++             ++        +           + +   + +    +
++            +     +++++++         +         +   +
++             ++    ++++++         +  +   +  +   +
++              + +  +  +++          +  +++  +    +
++              + +  +  ++            +     +     +
++              +       +              +++++      +
++               +    ++ +       ++               +
++                ++++++ +      ++ +              +
++              ++++++  ++      +   +++   ++      +
++     +++     +  +  +  + +   ++ +     +++  +     +
++    +   +     +  +++++  +   + ++      + ++ +    +
++    +   +++    +++    ++    +   ++ ++   ++ +    +
++  ++       ++              +      + +     +5    +
++ +           + ++         +         +    + +    +
+++            ++  +        +     +  +   ++  +FBXR+
+++           ++   +       +     +    ++ ++   +   +
+++          +     +       +    ++    ++   +  +   +
++        +++       +      +         + +   +  +   +
++ ++++             ++      +       + +    +  +   +
++ +   +++ +        ++       ++   ++ +    + +++   +
++ +  +      ++      +         +++  +    +   ++   +
++  +++  +     +     +          ++  ++  +     +   +
++     +  +    +    +           +++  + ++++   +   +
++     +   +      ++               ++ + +    ++   +
++     +++++++++++                   ++++    ++   +
++                                       +  +++   +
+++++++++++++++++++++++++++++++++++++++++++++++++++
+#end

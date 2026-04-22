@@ -1,0 +1,74 @@
+#domain
+hospital
+#levelname
+AMC
+#colors
+grey: A
+cyan: 0,B
+purple: 1,D
+green: 2
+red: C,3
+orange: 4
+#initial
+++++++++++++++++++++++++++++++
++AAAAAAAA +                 0+
++BABABABA                   1+
++AAAAAAAA+++++++++++  ++++++++
++BABABABA                    +
++AAAAAAAA                    +
++BABABABA                    +
++AAAAAAAA   AAA              +
++BABABABA   A2A              +
++AAAAAAAA   AAA              +
++BABABABA                    +
++AAAAAAAA                    +
++BABABABA                    +
++AAAAAAAA++++  +++++++++++++++
++BABABABA                    +
++AAAAAAAA                    +
++BABABABA                B   +
++AAAAAAAA                    +
++BABABABA              CCC   +
++AAAAAAAA                    +
++BABABABA            DDDDD   +
++AAAAAAAA                    +
++BABABABA                    +
++AAAAAAAA                    +
++BABABABA                    +
++AAAAAAAA                    +
++BABABABA++++++++  +++++++++++
++AAAAAAAA4                   +
++BABABABA3                 + +
+++++++++++++++++++++++++++++++
+#goal
+++++++++++++++++++++++++++++++
++        0+                  +
++        1                   +
++        +++++++++++  ++++++++
++                            +
++                            +
++                            +
++                            +
++                            +
++                            +
++                         DDD+
++                         DCC+
++                         DCB+
++        ++++  +++++++++++++++
++                            +
++                            +
++                            +
++                            +
++                            +
++                            +
++                            +
++                            +
++                            +
++                            +
++                            +
++                            +
++        ++++++++  +++++++++++
++                           4+
++                          +3+
+++++++++++++++++++++++++++++++
+#end

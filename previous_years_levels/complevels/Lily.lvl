@@ -1,0 +1,118 @@
+#domain
+hospital
+#levelname
+Lily
+#colors
+grey: M,3
+pink: Z
+cyan: L,D,G,C,B,I,J,H,F,E,K,1,9
+brown: X,4
+purple: A,2,W,Y
+lightblue: O,N,P,0
+blue: Q,5
+green: T,6
+orange: 8,S
+red: U,R,V,7
+#initial
+++++++++++++++++++++++++++++++++++++++++++++++++++
++         MMMMM    M Z ZLX    MDGCCBTIM A        +
++4X5Q     XXXXX    M M MJX OZ ZZZNNNNZZ A        +
++         MMMMM    A X XHX O            Q        +
++MMMMMMM           M X XFZ OMZZZZAAAAZZ QBCDEFGK +
++M8ST 6M           Z X XDA P JFIEL  AFZ Q        +
++MMM MMM           M M MBA PPTTTTTNNNFZ A  3 H   +
++  M S M           M Z ZCX          AGZ A    I   +
++  M MMM           A M MEX APPOOZZZZAEZ A1   J   +
++  M   M           M X XGZ ADKM         K AAAQQAA+
++  M M M           A X XIX AAAAAAAAQQ QQQ      MJ+
++  MTMSM           M M MKX       M  Q   QZZZZ TTT+
++  M   M           Z  9  ZAAAAAAAAAQQ QD    Z TMH+
++  MM MM            MMZMMA        AEQ QQQTT Z   Z+
++  M   M            MQQQQA ZZZZZZ A       T ZZZZZ+
++  MM MM            AQPPOA      Z A AAAAA T    K +
++  M   M            MQONNAQQQQQ Z       A TTTTTTT+
++MMMMMMM            MQOONZL     SSSBZZX A       M+
++                   MQPNNA AAAAGL SH  X AAAAAAAAA+
++                   ZQOPNA A  AAASS QBX          +
++                   AQOPNZ A X      QCXZZZZZZZZX +
++                   AQNOOZ A OQ A S AAQ        X +
++                   ZQNNNX A OP AHS I QQQQZPOP X +
++                   MQPPPX A    AJSSS     Q  L   +
++                   MQOPPZAAAAXXZXXXZAAAAXXXXZXXX+
++                   MQ0   QQQQQO                 +
++                   Z            NP              +
++                   M  XXMMXZMXXXZXXXXXXZMMMMXXXX+
++                  M  M          2               +
++                 M  X       W   W W  W W        +
++                Z  X        W   W W   W         +
++               M  M   ZZ ZZ WWW W WWW W         +
++              M  X    Z   Z             SSSSS   +
++             A  M     Z   Z     AAAA    S   S   +
++            Z  M      Z   Z     A       S   S   +
++           M  Z   ZZZZZ   ZZZZZ AAAA SSSS   SSSS+
++          M  X    Z    AAA    Z    A S   URU   S+
++         M  X     Z    ASA    Z A  A S   RZR   S+
++        M  M      Z    WWW    Z  AA  S   UUU   S+
++       A  M       ZZZZZ   ZZZZZ      SSSS   SSSS+
++      M  X            Z   Z             S   S   +
++     M  Z  AA   YY    Z   Z   RR   VU   S   S   +
++    Z  X  AAAY YYYY   Z   Z  RUUR VUVV  SS SS   +
++   M  M   AAYYYYYYY   ZZTZZ  RRUUUUVVV    7     +
++  A  X    AAAAYYYYY     T    RRUUVVUVV    T     +
++ A  Z      AAAYYYY   T  T  T  RRUVVUV  T  T  T  +
++M  X        AAWWW    TT T TT   RRVVR   TT T TT  +
++  M          AWW      TTTTT     RRR     TTTTT   +
++ X            W        TTT       R       TTT    +
+++++++++++++++++++++++++++++++++++++++++++++++++++
+#goal
+++++++++++++++++++++++++++++++++++++++++++++++++++
++                   L     G       EI             +
++ QX                K                            +
++                  AJ        L         I         +
++                   I                            +
++  T                H    A                       +
++                   G                            +
++     S            MF     F   JBCGMM             +
++                   E      A                     +
++    S              D             E  D  1K       +
++                  AC          A             FJ  +
++                  MB    X   CDM 3M  I        T  +
++                             A        D  C      +
++                         F                   H  +
++   T S                              H           +
++                                   A   AM   K   +
++    86             M            J C     M   TT  +
++                                         M   M  +
++                   M           HL        A   A  +
++                        AG  I     E   E    B    +
++                   A     B KX D J       Z Z     +
++                   A    Z             K         +
++                         L               Z      +
++                                    BHGF  L     +
++                            A    X  A A   X   X +
++                                0P   NOON ONNPP +
++                                PP   NO    NONOP+
++                        M    X  Z  X   Z MM     +
++                  MP                            +
++                  N                             +
++                Z                               +
++                                                +
++               P       AYA               S      +
++             AO M      AYA              SRRR    +
++             N         AYA               RVR    +
++           M  Z        AYA            S  RVRS   +
++                   WWWWAWAAAAA        UUURVRUUUS+
++                   AYYYWSWYYYA        UVUV VVVU +
++           M       AAAAAWAWWWW        UUURRRUUV +
++        ON             AAA             S VRV  S +
++       P               AYA               UUU    +
++                       AAA               RRV    +
++    ZNO                WWW                V     +
++                                          7     +
++  AP                                            +
++ A                      T                       +
++  P                     T                       +
++NOM                     TT                      +
++                        T                       +
+++++++++++++++++++++++++++++++++++++++++++++++++++
+#end

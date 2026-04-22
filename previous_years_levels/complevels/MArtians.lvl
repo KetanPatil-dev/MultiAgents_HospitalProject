@@ -1,0 +1,118 @@
+#domain
+hospital
+#levelname
+MArtians
+#colors
+orange: O,2,3,7
+red: R
+green: G,6,5,A
+lightblue: H,9
+blue: B,8
+cyan: L
+pink: 1,K
+purple: 0,P
+brown: Y,4
+grey: N
+#initial
+++++++++++++++++++++++++++++++++++++++++++++++++++
+++O++RG G+ O2++++++++++++++++++             ++++++
++OOO++6  + O    ++++O+++++++                 +O+++
+++O+++H BHBHBH BHL+OOO+++++      1RRROO      OOO++
+++++++5  + O    ++++O++++++     RRROOOOOO     O+++
++++++RA A+ O3++++++++++++    0RROOOORRRRRRR    +++
++++++++++++++++++++++++++    OOOOORRRRRRRRRR    ++
++++++++++O++++++++++++++    OOORRRRRRRRRRRRRR   ++
+++++++++OOO++++++++++O++    RRRRRRRRRRRRRRROO   ++
++++++O+++O++++O+++++OOO+   RRROOOOORRRRRROOOOO   +
+++++OOO++++++OOO+++++O+    ROOOOORRRRRROOOORRR   +
++++++O++++++++O++  +++    OOOORRRRRRRROOORRRRRR  +
++++++++++++++++           O8RRRRRRRRRRRRRRRRROO ++
++++++++++++      O        RRRRRRRRRRRRRRRRRROOR ++
++++++++++ O     OOO      YRRRRRRRRRRRRRRRROOORR ++
+++++++++ OOO     O        RRRRRRRRRRRRRRROORRRR  +
+++++++    O          O     RRRRRRROOORRRRRRRRR   +
++++++O              OOO    RRRROOOOORRRRRRRRRR   +
+++++OOO              O      ROOOORRRRRRRRRRRR    +
+++++ O                      OOORRRRRRRRRRRRRO    +
+++++       PBLLLLHHHH        RRRRRRRRRRRRROO   +++
++++       BBBBBLLLHHBBH       RRRRRRRRROOOO    +++
++++     PBBBBBBBBBBBBBBB        RRRRROOOOY    ++++
++++    GGGBBBBBBBBBBBBB7BB        RROOO      +++++
+++    GGGGGGGBBBBBBBBBBBBBG   O     Y       ++++++
+++   GGGGGGGGGBBBBBBBBBBBBGG OOO           ++O++++
+++  PGGGGGGGGGBBLLHBBBBBGGGG  O           ++OOO+++
++   GGGGGGGGGGBLHHHHBGGGGGGGG       +++++ +++O++++
++  GGGGGGGGGBBBHHHBBGGGGGGGGGG  +++++++++ ++++++++
++ PGGGGGGGBBBBBBBBBBGGGGGGGGGG     ++++    +++++++
++ GGLLHBBBBBBBBBBBBBGGGGGGGGGGG              +++++
++ LLHHHHBBBBBBBBBBBBBGGGGGGGGGGK     NNNNN   +++++
++ LHHHHBBBBBBBBBBBBBBBBGGGGGGGGKK   NNNNNNN   ++++
++ GGHHBBBBBBHBBBBBBBBBBBBGBBBBGKK  NHHHNHHHN   +++
++ GGHHHBBBBLHHBBBBGGGGGGGGBGGGBK   NHNHNHNHN    ++
++ GGGGBBBBLLHHHBBGGGGGGGGGGGGGB    NN9HNHNHN    ++
++ GGGGBBBBBLHHBBGGGGGGGGGGGGGGB    NHHNNHNHN    ++
++ GGGGGBBBBHHBBBBGGGGGGGGGGGBBB    NHHHNHHHN  O ++
++ PGGGGGBBBBHHBBBGGGGGGGGGGGBB      NNNNNNN  OOO++
++ PGGGGGBBBBBHBBBBGGGGGGGGBBBB     O NNNNN    O ++
++  PGGGGBBBBBBBBBBGGGGGGGGBBB     OOO          +++
+++  4GGGBBBBBBBBBBGGGGGGGBBB       O          ++++
+++   GGGBBBBBBBBBBGGGGGGBBBB                 +++++
+++    GBBBBBBBBBBBBBGGBBBBB              O   +++++
++++    BBBBBBHHBBBBBBBBBBB     O        OOO ++++++
++++      BBLHHHHHHBBBBBB      OOO        O  ++O+++
+++O++     LLLLHHHHHHHHB        O           ++OOO++
++OOO++      LLLLLHHHH       ++++        ++++++O+++
+++O++++++         K      +++++++++   +++++++++++++
+++++++++++++++++++++++++++++++++++++++++++++++++++
+#goal
+++++++++++++++++++++++++++++++++++++++++++++++++++
+++ ++ A A+O  ++++++++++++++++++             ++++++
++   ++  6+O    2++++ +++++++       PP0       + +++
+++ +++            +   +++++    PPP              ++
+++++++  5+O    3++++ ++++++   PP         K1    +++
++++++ G G+O  ++++++++++++                  KK  +++
++++++++++++++++++++++++++                   K   ++
++++++++++ ++++++++++++++                     K  ++
+++++++++   ++++++++++ ++                     K  ++
++++++ +++ ++++ +++++   +                         +
+++++   ++++++   +++++ +                       K  +
++++++ ++++++++ ++  +++                           +
++++++++++++++++                                 ++
++++++++++++                                     ++
++++++++++                                       ++
+++++++++                                         +
+++++++                                           +
++++++                                            +
+++++                                             +
+++++               Y                             +
+++++                                           +++
++++                                            +++
++++                                           ++++
++++                                          +++++
+++                                          ++++++
+++                                         ++ ++++
+++                          Y             ++   +++
++                            Y      +++++ +++ ++++
++                               +++++++++ ++++++++
++                                  ++++    +++++++
++                                            +++++
++                                            +++++
++                                             ++++
++                                              +++
++                                               ++
++                                    9          ++
++                                               ++
++                                             O ++
++                                            OOO++
++                                             O ++
++                                              +++
+++                                            ++++
+++                                           +++++
+++                                           +++++
++++                                         ++++++
++++                                         ++ +++
+++ ++                                      ++   ++
++   ++                      ++++        ++++++ +++
+++ ++++++                +++++++++   +++++++++++++
+++++++++++++++++++++++++++++++++++++++++++++++++++
+#end

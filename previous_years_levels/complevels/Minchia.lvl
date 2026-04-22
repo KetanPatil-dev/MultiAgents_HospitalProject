@@ -1,0 +1,117 @@
+#domain
+hospital
+#levelname
+Minchia
+#colors
+pink: 0, 7, W, Z
+red: 1, G, M, A, R, I, O
+cyan: 2, X
+blue: 3, T, B, J
+green: 4, P, U, N, C, L, E
+orange: 5, S, V, K
+grey: 6, F, Q 
+lightblue: 8, Y
+brown: 9, H, D
+#initial
+++++++++++++++++++++++++++++++++++++++++++++++++++
++PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP+
++P   X             PPPPPPPPPPPP                YP+
++P 2 X                                        Y P+
++P   X             PPPPPPPPPPPP              Y  P+
++PXXXPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP   P+
++P   PWW         ZZPPPPPPPPPPPP+++++++++++++P   P+
++P   PWW         ZZPPPPPPPPPPPP+D+CHUHAN   +P   P+
++P   PWW    S    ZZPPPPPPPPPPPP+T+++++++++++P   P+
++P   PWW         ZZPPPPPPPPPPPP+U+KEVIN    +P   P+
++P   PWW         ZZPPPPPPPPPPPP+++++++++++++P   P+
++P   P+++++W+++++PPPPPPPPPPPPPPPP+KIEN     +P   P+
++P   P+++++Z+++++PPPPPPPPPPPPPPPP+++++++++++P   P+
++P   P5        K7PPPPPPPPPPPPPPPP+SEBASTIAN+P   P+
++P   P          KPPPPPPPPPPPPPPPP+++++++++++P   P+
++P   P B B      KPPPPPPPPPPPPPPPP+STEVEN   +P   P+
++P   P B B     K0PPPPPPPPPPPPPPPP+++++++++++P   P+
++P   P B B PPPPPP     GGGGM      PPPPPP+DTU+P   P+
++P   P BVB PPPPPP    GGGGGGGG    PPPPPP+++++P   P+
++P P PPPPPPPPPPPP    HHHSSBS     PPPPPPPPPPPP P P+
++P P PPPPPPPPPPPP   HSHSSSBSSS   PPPPPPPPPPPP P P+
++P P PPPPPPPPPPPP   HSHHSSSHSSS  PPPPPPPPPPPP P P+
++P P PPPPPPPPPPPP   HHSSSSHHHH   PPPPPPPPPPPP P P+
++P P PPPPPPPPPPPP     SSSSSSS    PPPPPPPPPPPP P P+
++P P PPPPPPPPPPPP    GGTGGG      PPPPPPPPPPPP P P+
++P P PPPPPPPPPPPP   GGGTGGTGGG   PPPPPPPPPPPP P P+
++P P PPPPPPPPPPPP  GGGGTTTTGGGG  PPPPPPPPPPPP P P+
++P P PPPPPPPPPPPP  SSGTVTTVTGSS  PPPPPPPPPPPP P P+
++P P PPPPPPPPPPPP  SSSTTTTTTSSS  PPPPPPPPPPPP P P+
++P P PPPPPPPPPPPP  SSTTT  TTTSS  PPPPPPPPPPPP P P+
++P P PPPPPPPPPPPP    TTT  TTT    PPPPPPPPPPPP P P+
++P   PBBBBBPPPPPP   DDD    DDD   PPPPPPT+F+HP   P+
++P   PB   BPPPPPP  DDDD    DDDD  PPPPPPT+F+HP   P+
++P   PB B BBBBBBBPPPPPPPPPPPPPPPPDD   +3   9P   P+
++P   PB         BPPPPPPPPPPPPPPPP++         P   P+
++P   PB BBBBBBB BPPPPPPPPPPPPPPPPQQ6  +     P   P+
++P   PB BOIRAMB BPPPPPPPPPPPPPPPP++         P   P+
++P   PB B  1    BPPPPPPPPPPPPPPPPBB   +     P   P+
++P   PB BBB BBB BPPPPPPPPPPPPPPPP+++++++++J+P   P+
++P   PB    4  B BBBPPPPPPPPPPPP +   +TH+    P   P+
++P   PB BELCNUB   BPPPPPPPPPPPP + + +FB+ +A+P   P+
++P   PB BBBBBBB B BPPPPPPPPPPPP + + +DQ+ +Z+P   P+
++P   PB           BPPPPPPPPPPPP + + +  + +E+P   P+
++P   PBBBBBBBBBBBBBPPPPPPPPPPPP   +      +++P   P+
++P   PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPYYYP+
++P  X              PPPPPPPPPPPP             Y   P+
++P X                                        Y 8 P+
++PX                PPPPPPPPPPPP             Y   P+
++PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP+
+++++++++++++++++++++++++++++++++++++++++++++++++++
+#goal
+++++++++++++++++++++++++++++++++++++++++++++++++++
++                                                +
++                                                +
++  8                                             +
++                                                +
++                                                +
++     ZZ         WW            +++++++++++++     +
++     ZZ         WW            + +         +     +
++     ZZ         WW            + +++++++++++     +
++     ZZ         WW            + +         +     +
++     ZZ         WW            +++++++++++++     +
++     +++++ +++++                +         +     +
++     +++++ +++++                +++++++++++     +
++     0         7                +         +     +
++       V                        +++++++++++     +
++       5                        +         +     +
++       W                        +++++++++++     +
++     K S K                            +   +     +
++  X  K Z K                            +++++  Y  +
++                                                +
++                                                +
++                                                +
++                                                +
++                                                +
++                                                +
++                                                +
++                                                +
++                                                +
++                                                +
++                                                +
++                                                +
++  X                                   B+D+Q  Y  +
++                                      B+D+Q     +
++                                FF   +          +
++                                ++              +
++                                TT   +          +
++        UNCLE                   ++              +
++                                HH   +          +
++                                +++++++++ +     +
++                              H+6 T+  +  J      +
++        MARIO                  + + +  + +A+     +
++                              D+F+B+  + +Z+     +
++                               + + +  + +E+     +
++                              9 Q+3     +++     +
++                                                +
++                                                +
++                                             2  +
++                                                +
++                                                +
+++++++++++++++++++++++++++++++++++++++++++++++++++
+#end

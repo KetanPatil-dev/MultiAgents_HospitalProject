@@ -1,0 +1,40 @@
+#domain
+hospital
+#levelname
+DASH
+#colors
+red: 0, A
+green: 1, B
+blue: 2, C
+purple:3, D,K
+orange:4, E
+cyan:5, F
+pink:6, G
+brown:7, H
+grey:8, I
+lightblue:9,S
+#initial
++++++++++++++++++++++
++0   3     2   7 + +
++  A   ++ ++++++ +D +
++++ 9+ G+E    H     +
++1 B   +++++++++ + 5+
++++C +6 +4     8   K+
+++   S   F  I       +
+++++ ++    ++  +++  + 
+   +          ++ + +
+   +++++++++++++ + +
+                 +++
+#goal
++++++++++++++++++++++
++                + +
++ B    ++ ++++++ +  +
++++  +  +    E      +
++      +++++++++ +  +
++++  +  +    I      +
+++C        G       K+
+++++ ++    ++  +++  + 
+   +   DASH   ++ + +
+   +++++++++++++ +F+   
+                 +++     
+#end             

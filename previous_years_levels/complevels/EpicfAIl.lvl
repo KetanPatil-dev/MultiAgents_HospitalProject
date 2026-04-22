@@ -1,0 +1,45 @@
+#domain
+hospital
+#levelname
+EpicfAIl
+#colors
+blue: 0, A
+red: 2, C, X
+purple: I
+green: 3, B
+orange: J
+pink: E
+grey: 1, D, Y
+#initial
+++++++++++++++++++++
++1 +   +  +   +    +
++2   + +  X   Y    +
++3 + +    +   +    +
++++++++++++++++++A++
++0             +B  +
++              +C  +
++              +D  +
++     I        ++ ++
++    III EEE       +
++    III EJE       +
++    IIB EEE       +
++     B   B        +
++     B   B        +
+++++++++++++++++++++
+#goal
+++++++++++++++++++++
++  +   +  +   +    +
++    + +           +
++  + +    +   +    +
++++++++++++++++++ ++
++              +3 D+
++              +2 C+
++              +1 B+
++     I        ++ ++
++    III EEE       +
++    III EJE       +
++    IIB EEE       +
++     B   B       0+
++     B   B       A+
+++++++++++++++++++++
+#end

@@ -1,0 +1,50 @@
+#domain
+hospital
+#levelname
+GHandDirt
+#colors
+blue: 0,A
+purple: 1,B
+green: 2,C
+brown: W
+#initial
++++++++++++++++++++
++0        W   W   +
++        W   W  W +
++       W   W  W  +
++      W   W  W   +
++  A  W   W  W   W+
++ A  W   W  W   W +
++    W  W  W   W  +
++    W W  W   W   +
++   WWW  W   W    +
++  W  2WW   W     +
++ W     WW W      +
++W   CC  WW       +
++   A    WWW      +
++  AAA  WBBBWWW   +
++   A  W          +
++     W           +
++   WW1           +
++++++++++++++++++++
+#goal
++++++++++++++++++++
++        A        +
++       A         +
++                 +
++                 +
++                 +
++                 +
++                 +
++                 +
++                 +
++                 +
++                 +
++                 +
++   A       BBB   +
++  AAA            +
++   A             +
++                 +
++CC2              +
++++++++++++++++++++
+#end

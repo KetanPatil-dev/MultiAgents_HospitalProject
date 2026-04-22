@@ -1,0 +1,61 @@
+#domain
+hospital
+#levelname
+ZOOM
+#colors
+red: Z,M,H,E,R,W,I,N,0
+cyan: O,A,1,2
+blue: G
+#initial
+  +++++++++++++++  
++++++++++++++++++++
++ZOOM+++++AAAAAAAA+
++MOOZ+++++AAAAAAAA+
+++++++++++AAAAAAAA+
++         AAAAAAAA+
++    +++++AAAAAAAA+
++HERE+++++AAAAAAAA+
++    +++++AAAAAAAA+
++++++++++++++ +++++
++        +        +
++ WINNER + ++++++ +
++        +  + + + +
++        +  + + + +
++        +  +     +
+++++++++++  12+++++
++        +        +
++        +++++++  +
++        +     0  +
++        +   ZOOM +
+++++     +  +++++++
++GG+     +        +
++EZ+     Z        +
+++++     +        +
++++++++++++++++++++
+#goal
+  +++++++++++++++  
++++++++++++++++++++
++ZOOM+++++AAAAAAAA+
++MOOZ+++++AAAAAAAA+
+++++++++++AAAAAAAA+
++         AAAAAAAA+
++    +++++AAAAAAAA+
++    +++++AAAAAAAA+
++HERE+++++AAAAAAAA+
++++++++++++++ +++++
++        +        +
++        + ++++++ +
++        +  + + + +
++        +  + + + +
++        +  +     +
+++++++++++    +++++
++        +        +
++        +++++++  +
++        +        +
++ZOOM    +        +
+++++     +  +++++++
++GG+     +        +
++EZ+              +
+++++     +        +
++++++++++++++++++++
+#end

@@ -1,0 +1,80 @@
+#domain
+hospital
+#levelname
+donkeyK
+#colors
+purple: H
+red: D
+pink: 1
+orange: A,0,K
+grey: L
+blue: S
+brown: 2,B,3,4,5,6
+lightblue: 7,8,M,N
+#initial
+++++++++++++++++++++++++++++++++
++HH+++H++H+H+H+H+HHH+H+H++++H+H+
++H+H+H+H+H+H+H+H+H+++H+H++++H+H+
++H+H+H+H+HHH+HH++HH++HHH+HH+HH++
++H+H+H+H+H+H+H+H+H++++H+++++H+H+
++HH+++H++H+H+H+H+HHH++H+++++H+H+
+++++++++++++++++++++++++++++++++
++  +                        +  +
++  +  DDD      1            +  +
++  + DDKDD LSSSSS           +  +
++  + DKKKD L                +  +
++  +  DKD  L                +  +
++  + DD DD L 2B             +  +
++  +SSSSSSSSSSSSS           +  +
++  +    L        SSSSSSSS   +  +
++  +    L                   +  +
++  +    L               B3  +  +
++  +          B4     SSSSSSS+  +
++  +    L    SSSSSSSS  L    +  +
++  +  SSSSSSS   L      L    +  +
++  +            L      L    +  +
++  +                        +  +
++  +  5B        L      L    +  +
++  +SSSSSSS  6B L      L    +  +
++  +       SSSSSSSSS   L    +  +
++7 +           L    SSSSSS  +8 +
++MM+           L            +NN+
++MM+                        +NN+
++MM+           L      SSSSSS+NN+
++MM+ A0       SSSSSSSS+++++++NN+
++MM+SSSSSSSSSS+++++++++++++++NN+
+++++++++++++++++++++++++++++++++
+#goal
+++++++++++++++++++++++++++++++++
++  +++ ++ + + + +   + + ++++ + +
++ + + + + + + + + +++ + ++++ + +
++ + + + +   +  ++  ++   +  +  ++
++ + + + + + + + + ++++ +++++ + +
++  +++ ++ + + + +   ++ +++++ + +
+++++++++++++++++++++++++++++++++
++MM+                        +NN+
++MM+        01A             +NN+
++MM+                        +NN+
++MM+                        +NN+
++MM+                        +NN+
++  +                        +  +
++  +                        +  +
++  +                        +  +
++  +                        +  +
++  +                        +  +
++  +                        +  +
++  +                        +  +
++  +                        +  +
++  +                        +  +
++  +                        +  +
++  +                        +  +
++  +                        +  +
++  +                        +  +
++  +                        +  +
++  +                        +  +
++  +                        +  +
++  +                        +  +
++  +    BBBBB         +++++++  +
++  +          +++++++++++++++  +
+++++++++++++++++++++++++++++++++
+#end
