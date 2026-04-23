@@ -18,6 +18,11 @@ class Color(Enum):
     def from_string(s: str) -> "Color | None":
         return _STR_TO_COLOR.get(s.lower())
 
+    @staticmethod
+    def compatible(agent_color: "Color | None", box_color: "Color | None") -> bool:
+        """An agent can manipulate a box iff they share the same color."""
+        return agent_color is not None and agent_color == box_color
+
 
 _STR_TO_COLOR = {
     "blue": Color.Blue,
