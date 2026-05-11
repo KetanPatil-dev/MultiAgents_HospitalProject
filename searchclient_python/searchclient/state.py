@@ -74,8 +74,10 @@ class State:
         return False
 
     def is_conflicting(self, joint_action: list[Action]) -> bool:
-        dest: set[tuple[int, int]] = set()
-        box_dest: set[tuple[int, int]] = set()
+        num_agents = len(self.agent_rows)
+        dest: set[tuple[int, int]] = set()      # agent destinations
+        box_dest: set[tuple[int, int]] = set()  # box destinations
+        agent_destinations: list[tuple[int, int] | None] = [None] * num_agents
 
         for agent, action in enumerate(joint_action):
             ar, ac = self.agent_rows[agent], self.agent_cols[agent]
@@ -85,24 +87,51 @@ class State:
 
             if action.type is ActionType.Move:
                 nr, nc = ar + action.agent_row_delta, ac + action.agent_col_delta
-                if (nr, nc) in dest:
+                if (nr, nc) in dest:        # two agents moving to same cell
+                    return True
+                if (nr, nc) in box_dest:    # agent moving to where a box is pushed
                     return True
                 dest.add((nr, nc))
+                agent_destinations[agent] = (nr, nc)
 
             elif action.type is ActionType.Push:
                 br, bc = ar + action.agent_row_delta, ac + action.agent_col_delta
                 bdr, bdc = br + action.box_row_delta, bc + action.box_col_delta
-                if (bdr, bdc) in box_dest:
+                if (bdr, bdc) in box_dest:  # two boxes pushed to same cell
+                    return True
+                if (bdr, bdc) in dest:      # box pushed to where an agent is going
+                    return True
+                if (br, bc) in dest:        # agent (entering box cell) conflicts with another agent
                     return True
                 box_dest.add((bdr, bdc))
                 dest.add((br, bc))
+                agent_destinations[agent] = (br, bc)
 
             elif action.type is ActionType.Pull:
                 nr, nc = ar + action.agent_row_delta, ac + action.agent_col_delta
-                if (nr, nc) in dest:
+                if (nr, nc) in dest:        # two agents moving to same cell
+                    return True
+                if (nr, nc) in box_dest:    # agent moving to where a box is pushed
+                    return True
+                if (ar, ac) in dest:        # box pulled to where another agent is going
                     return True
                 dest.add((nr, nc))
-                box_dest.add((ar, ac))
+                box_dest.add((ar, ac))      # box pulled into agent's current (vacated) cell
+                agent_destinations[agent] = (nr, nc)
+
+        # Detect position swaps: two agents exchanging cells is forbidden.
+        for i in range(num_agents):
+            if agent_destinations[i] is None:
+                continue
+            di = agent_destinations[i]
+            for j in range(i + 1, num_agents):
+                if agent_destinations[j] is None:
+                    continue
+                dj = agent_destinations[j]
+                # Swap if i goes where j was AND j goes where i was
+                if (di == (self.agent_rows[j], self.agent_cols[j])
+                        and dj == (self.agent_rows[i], self.agent_cols[i])):
+                    return True
 
         return False
 

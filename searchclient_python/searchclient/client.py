@@ -28,9 +28,10 @@ from searchclient.manager import Manager
 def main(args: argparse.Namespace) -> None:
     print("MultiAgentClient initializing.", file=sys.stderr, flush=True)
 
-    # Send client name to server (protocol requirement)
+    # Send client name to server (protocol requirement).
+    # First stdout line = client name; lines starting with '#' are comments.
     print("MultiAgentClient", flush=True)
-    print("#Multi-agent client — 02285 F26", flush=True)
+    print("#Multi-agent hospital client 02285 F26", flush=True)
 
     server_messages = sys.stdin
 
@@ -51,34 +52,36 @@ def main(args: argparse.Namespace) -> None:
     # --- Execution loop ---
     current_state = initial_state
     t = 0
+    MAX_STEPS = 19_500  # stay safely inside 20,000 limit
 
-    while not manager.is_done(current_state):
+    while not manager.is_done(current_state) and t < MAX_STEPS:
         joint_action = manager.get_joint_action(current_state)
 
-        # Send joint action to server
+        # Send joint action to server (one line: "act1|act2|...")
         print(
             "|".join(a.name_ for a in joint_action),
             flush=True,
         )
 
-        # Read server response (must drain stdin to avoid blocking)
+        # Read server response (must drain stdin to avoid blocking server)
         response = server_messages.readline()
         if not response:
             break
 
-        # Advance state
-        if not current_state.is_conflicting(joint_action):
-            current_state = current_state.result(joint_action)
-        # If conflict slipped through, state stays — agents will replan
+        # Advance local state mirror (always apply — manager already resolved conflicts)
+        current_state = current_state.result(joint_action)
 
         t += 1
-        if t % 100 == 0:
+        if t % 500 == 0:
             print(
                 f"t={t}, memory={memory.get_usage():.1f}/{memory.max_usage:.0f} MB",
                 file=sys.stderr, flush=True,
             )
 
-    print(f"Done at t={t}.", file=sys.stderr, flush=True)
+    if manager.is_done(current_state):
+        print(f"Solved at t={t}.", file=sys.stderr, flush=True)
+    else:
+        print(f"Did not solve within {t} steps.", file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,16 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Launch MAPF Server",
+			"type": "shell",
+			"command": "PYTHONPATH=searchclient_python java -jar server.jar -l previous_years_levels/complevels/DASH.lvl -c \"python -m searchclient.client\" -g 200 -s 300",
+			"isBackground": true,
+			"presentation": {
+				"reveal": "always",
+				"panel": "new"
+			},
+			"problemMatcher": []
+		}
+	]
+}

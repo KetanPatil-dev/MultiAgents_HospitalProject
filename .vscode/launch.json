@@ -1,0 +1,23 @@
+{
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"name": "MAvis (Python Attach)",
+			"type": "debugpy",
+			"request": "attach",
+			"internalConsoleOptions": "openOnFirstSessionStart",
+			"connect": {
+				"host": "localhost",
+				"port": 1234
+			},
+			"pathMappings": [
+				{
+					"localRoot": "${workspaceFolder}",
+					"remoteRoot": "."
+				}
+			],
+			"justMyCode": true,
+			"preLaunchTask": "Launch MAPF Server"
+		}
+	]
+}
