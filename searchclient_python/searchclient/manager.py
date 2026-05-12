@@ -77,6 +77,104 @@ class Manager:
                     solved_tasks=deque(),
                 )
 
+        # Step 1a: Find all box goals and create move_box tasks for each agent color
+        print("Building box goal tasks...", file=sys.stderr, flush=True)
+        self._build_box_goal_tasks()
+
+        # Step 1b: Find all agent goals and create move_agent tasks
+        print("Building agent goal tasks...", file=sys.stderr, flush=True)
+        self._build_agent_goal_tasks(initial_state)
+
+        # # Step 1c: Assign first task from each color group to respective agents
+        # print("Assigning initial tasks to agents...", file=sys.stderr, flush=True)
+        # self._assign_initial_tasks()
+
+        # # Step 1d: Perform HCA* preplanning
+        # print("Performing HCA* preplanning...", file=sys.stderr, flush=True)
+        # self._hca_preplan(initial_state)
+
+        print(
+            f"Manager setup complete: {profile.num_agents} agents ready.",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    def _build_box_goal_tasks(self) -> None:
+        """
+        Find all box goals in the profile and create move_box tasks.
+        Add to color group future tasks.
+        """
+        assert self.profile is not None
+
+        for goal_r, goal_c, goal_char in self.profile.box_goals:
+            task = Task(
+                task_type="move_box",
+                object_pos=(
+                    goal_r,
+                    goal_c,
+                ),  # initial box position (same as goal for now)
+                goal_pos=(goal_r, goal_c),
+                box_char=goal_char,
+                crucial=True,
+            )
+
+            # Find the actual box and update object_pos
+            # NOTE: this order here might be IMPORTANT !!!
+            for br, bc, box_char in self.profile.real_boxes:
+                if box_char == goal_char:
+                    task.object_pos = (br, bc)
+                    break
+
+            # Get color of the box
+            box_color = (
+                State.box_colors[ord(goal_char) - ord("A")]
+                if goal_char.isupper()
+                else None
+            )
+
+            # Add to color group future tasks
+            # if box_color not in self.color_tasks:
+            #     self.color_tasks[box_color] = {
+            #         "future": deque(),
+            #         "current": deque(),
+            #     }
+            self.color_tasks[box_color]["future_box_tasks"].append(task)
+
+            print(
+                f"  Box task: {goal_char} {task.object_pos} → {task.goal_pos}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    def _build_agent_goal_tasks(self, initial_state: State) -> None:
+        """
+        Find all agent goals in the profile and create move_agent tasks.
+        Add to respective agent future tasks.
+        """
+        assert self.profile is not None
+
+        for agent_goal_r, agent_goal_c, agent_id in self.profile.agent_goals:
+            if 0 <= agent_id < len(self.agents):
+                task = Task(
+                    task_type="move_agent",
+                    object_pos=(
+                        initial_state.agent_rows[agent_id],
+                        initial_state.agent_cols[agent_id],
+                    ),
+                    goal_pos=(agent_goal_r, agent_goal_c),
+                    crucial=True,
+                )
+                # self.color_tasks[agent_id]["future_agent_tasks"].append(task)
+                self.color_tasks[State.agent_colors[agent_id]][
+                    "future_agent_tasks"
+                ].append(task)
+
+                print(
+                    f"  Agent {agent_id} goal: {task.object_pos} → {task.goal_pos}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
     def _sync_agent_task_state(self, agent_id: int, task: Task) -> None:
         """
         Keep the Agent's internal task/goal fields aligned with the manager task.
