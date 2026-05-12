@@ -2,9 +2,31 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
-			"label": "Launch MAPF Server",
+			"label": "Launch MAPF Server ZeroWardRush",
+			"type": "shell",
+			"command": "PYTHONPATH=searchclient_python java -jar server.jar -l custom/ZeroWardRush.lvl -c \"python -m searchclient.client\" -g 200 -s 300",
+			"isBackground": true,
+			"presentation": {
+				"reveal": "always",
+				"panel": "new"
+			},
+			"problemMatcher": []
+		},
+		{
+			"label": "Launch MAPF Server SingularWardRush",
 			"type": "shell",
 			"command": "PYTHONPATH=searchclient_python java -jar server.jar -l custom/SingularWardRush.lvl -c \"python -m searchclient.client\" -g 200 -s 300",
+			"isBackground": true,
+			"presentation": {
+				"reveal": "always",
+				"panel": "new"
+			},
+			"problemMatcher": []
+		},
+		{
+			"label": "Launch MAPF Server EasyWardRush",
+			"type": "shell",
+			"command": "PYTHONPATH=searchclient_python java -jar server.jar -l custom/EasyWardRush.lvl -c \"python -m searchclient.client\" -g 200 -s 300",
 			"isBackground": true,
 			"presentation": {
 				"reveal": "always",

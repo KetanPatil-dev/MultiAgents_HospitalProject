@@ -28,13 +28,18 @@ class Agent:
 
     def __init__(
         self,
-        agent_id:  int,
-        dist_map:  "DistanceMap",
-        profile:   "LevelProfile",
+        agent_id: int,
+        dist_map: "DistanceMap",
+        profile: "LevelProfile",
     ) -> None:
         self.agent_id = agent_id
         self.dist_map = dist_map
-        self.profile  = profile
+        self.profile = profile
+
+        # Current position of this agent in the latest observed joint state.
+        # Kept in sync by the Manager so other components can inspect it.
+        self.agent_row: int = -1
+        self.agent_col: int = -1
 
         # Task queue: each task is (box_r, box_c, goal_r, goal_c, box_char)
         # box_r/box_c are INITIAL positions; replan always finds current position.
@@ -44,7 +49,7 @@ class Agent:
         self.agent_goal: tuple[int, int] | None = None
 
         # Current plan and index
-        self._plan:       list[Action] = []
+        self._plan: list[Action] = []
         self._plan_index: int = 0
 
         # Space-time constraints: (r, c, t) cells forbidden for this agent
@@ -54,6 +59,16 @@ class Agent:
         # When a nav-only agent is given a temporary escape cell, the real
         # positional goal is saved here so it can be restored afterwards.
         self._pending_agent_goal: "tuple[int, int] | None" = None
+
+    def update_position(self, row: int, col: int) -> None:
+        """Update the agent's cached position."""
+        self.agent_row = row
+        self.agent_col = col
+
+    @property
+    def position(self) -> tuple[int, int]:
+        """Return the cached (row, col) position."""
+        return self.agent_row, self.agent_col
 
     # ------------------------------------------------------------------
     # BDI cycle
@@ -74,7 +89,8 @@ class Agent:
                 self._plan_index = 0
                 print(
                     f"Agent {self.agent_id}: task done, {len(self.tasks)} remaining.",
-                    file=sys.stderr, flush=True,
+                    file=sys.stderr,
+                    flush=True,
                 )
             else:
                 break
@@ -85,7 +101,7 @@ class Agent:
         A more sophisticated version would also check for invalidated constraints.
         """
         if not self.tasks and self.agent_goal is None:
-            return True   # nothing to do — trivially sound
+            return True  # nothing to do — trivially sound
         return bool(self._plan) and self._plan_index < len(self._plan)
 
     def replan(self, joint_state: "State", timestep: int) -> bool:
@@ -162,7 +178,8 @@ class Agent:
                 print(
                     f"Agent {self.agent_id}: replan failed for box {box_char} "
                     f"({box_r},{box_c})→({goal_r},{goal_c}).",
-                    file=sys.stderr, flush=True,
+                    file=sys.stderr,
+                    flush=True,
                 )
                 self._plan = []
                 self._plan_index = 0
@@ -263,13 +280,15 @@ class Agent:
         """True iff all assigned tasks are completed and no agent goal pending."""
         if self.agent_goal is not None:
             gr, gc = self.agent_goal
-            if not (joint_state.agent_rows[self.agent_id] == gr
-                    and joint_state.agent_cols[self.agent_id] == gc):
+            if not (
+                joint_state.agent_rows[self.agent_id] == gr
+                and joint_state.agent_cols[self.agent_id] == gc
+            ):
                 return False
         return not self.tasks
 
     def remaining_plan(self) -> list[Action]:
-        return self._plan[self._plan_index:]
+        return self._plan[self._plan_index :]
 
     # ------------------------------------------------------------------
     # Constraint injection (by Manager CBS)
@@ -293,9 +312,9 @@ class Agent:
     def _find_box(
         self,
         joint_state: "State",
-        box_char:    str,
-        goal_r:      int,
-        goal_c:      int,
+        box_char: str,
+        goal_r: int,
+        goal_c: int,
     ) -> tuple[int | None, int | None]:
         """
         Find the current (row, col) of the box with the given char that has
@@ -317,7 +336,6 @@ class Agent:
         _, r, c = candidates[0]
         return r, c
 
-
     # ------------------------------------------------------------------
     # Obstacle clearing helpers
     # ------------------------------------------------------------------
@@ -325,8 +343,10 @@ class Agent:
     def _find_path_obstacle(
         self,
         joint_state: "State",
-        from_r: int, from_c: int,
-        to_r:   int, to_c:   int,
+        from_r: int,
+        from_c: int,
+        to_r: int,
+        to_c: int,
     ) -> "tuple[int, int, str] | None":
         """
         BFS treating walls as obstacles and boxes as transparent.
@@ -335,6 +355,7 @@ class Agent:
         """
         from collections import deque
         from searchclient.state import State as _S
+
         walls = _S.walls
         num_rows = len(walls)
         num_cols = len(walls[0]) if num_rows > 0 else 0
@@ -360,9 +381,12 @@ class Agent:
                 return None
             for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
                 nr, nc = r + dr, c + dc
-                if (0 <= nr < num_rows and 0 <= nc < num_cols
-                        and not walls[nr][nc]
-                        and (nr, nc) not in parent):
+                if (
+                    0 <= nr < num_rows
+                    and 0 <= nc < num_cols
+                    and not walls[nr][nc]
+                    and (nr, nc) not in parent
+                ):
                     parent[(nr, nc)] = (r, c)
                     queue.append((nr, nc))
         return None
@@ -370,20 +394,22 @@ class Agent:
     def _find_push_dest(
         self,
         joint_state: "State",
-        blk_r: int, blk_c: int,
+        blk_r: int,
+        blk_c: int,
     ) -> "tuple[int, int] | None":
         """
         Find a (dest_r, dest_c) to push the box at (blk_r, blk_c) to:
         dest must be free and the push-from cell (opposite direction) must be free.
         """
         from searchclient.state import State as _S
+
         walls = _S.walls
         num_rows = len(walls)
         num_cols = len(walls[0]) if num_rows > 0 else 0
 
         for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
             dest_r, dest_c = blk_r + dr, blk_c + dc
-            frm_r,  frm_c  = blk_r - dr, blk_c - dc
+            frm_r, frm_c = blk_r - dr, blk_c - dc
             if not (0 <= dest_r < num_rows and 0 <= dest_c < num_cols):
                 continue
             if walls[dest_r][dest_c] or joint_state.boxes[dest_r][dest_c]:
@@ -398,8 +424,10 @@ class Agent:
     def _plan_with_obstacle_clear(
         self,
         joint_state: "State",
-        box_r:    int, box_c:  int,
-        goal_r:   int, goal_c: int,
+        box_r: int,
+        box_c: int,
+        goal_r: int,
+        goal_c: int,
         box_char: str,
     ) -> "list[Action] | None":
         """
@@ -443,7 +471,7 @@ class Agent:
                 break  # no geometric obstacle found — A* failure has another cause
 
             o_r, o_c, o_char = obstacle
-            o_color = _S.box_colors[ord(o_char) - ord('A')]
+            o_color = _S.box_colors[ord(o_char) - ord("A")]
             if not Color.compatible(_S.agent_colors[self.agent_id], o_color):
                 break  # can't push this box
 
@@ -465,7 +493,8 @@ class Agent:
             print(
                 f"Agent {self.agent_id}: clearing [{iteration+1}] {o_char} "
                 f"({o_r},{o_c})→({d_r},{d_c}) to reach {box_char}.",
-                file=sys.stderr, flush=True,
+                file=sys.stderr,
+                flush=True,
             )
             accumulated.extend(clear_plan)
             current = _apply_single_agent_plan(current, self.agent_id, clear_plan)
@@ -476,6 +505,7 @@ class Agent:
 def _apply_single_agent_plan(state: "State", agent_id: int, plan: list) -> "State":
     """Simulate applying a single-agent plan; other agents stay put."""
     from searchclient.action import Action
+
     current = state
     num = len(state.agent_rows)
     for action in plan:
@@ -490,8 +520,13 @@ def _ghost_state_for_nav(state: "State", agent_id: int) -> "State":
     Used for nav-only A* so other agents don't block the topological path;
     conflict resolution makes them yield at runtime."""
     from searchclient.state import State
-    fake_rows = [0 if a != agent_id else state.agent_rows[a]
-                 for a in range(len(state.agent_rows))]
-    fake_cols = [0 if a != agent_id else state.agent_cols[a]
-                 for a in range(len(state.agent_cols))]
+
+    fake_rows = [
+        0 if a != agent_id else state.agent_rows[a]
+        for a in range(len(state.agent_rows))
+    ]
+    fake_cols = [
+        0 if a != agent_id else state.agent_cols[a]
+        for a in range(len(state.agent_cols))
+    ]
     return State(fake_rows, fake_cols, state.boxes)

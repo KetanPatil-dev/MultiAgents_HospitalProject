@@ -1,25 +1,47 @@
 """
-Manager — Clean slate for new coordinated multi-agent planning.
+Manager — Coordinated multi-agent planning with task-based approach.
 
-Architecture (to be implemented):
-  - setup()           : initialize agents, assign tasks
-  - get_joint_action(): per-timestep coordination
+Architecture:
+  - setup()           : initialize agents, build task lists, prearrange HCA*
+  - get_joint_action(): per-timestep coordination (BDI cycle)
   - is_done()         : termination check
 """
 
 from __future__ import annotations
 
+from collections import deque
 import sys
 from typing import TYPE_CHECKING
+from dataclasses import dataclass
 
 from searchclient.action import Action, ActionType
 from searchclient.agent import Agent
+from searchclient.color import Color
 from searchclient.heuristics import DistanceMap
 from searchclient.level_parser import LevelProfile
 from searchclient.state import State
 
 if TYPE_CHECKING:
     pass
+
+
+@dataclass
+class Task:
+    """
+    Unified task representation.
+
+    task_type: 'move_agent' (agent navigation) or 'move_box' (box pushing)
+    object_pos: (row, col) of agent or box
+    goal_pos: (row, col) target position
+    agent_end_pos: optional (dr, dc) relative position for agent after task
+                   e.g. (0, 1) = agent ends to the right of the box
+    """
+
+    task_type: str  # 'move_agent' or 'move_box'
+    object_pos: tuple[int, int]
+    goal_pos: tuple[int, int]
+    agent_end_pos: tuple[int, int] | None = None
+    box_char: str | None = None  # for move_box only
 
 
 class Manager:
@@ -30,6 +52,12 @@ class Manager:
         self.dist_map: DistanceMap | None = None
         self.timestep: int = 0
 
+        # Task lists: {agent_id: {'future': [...], 'current': [...], 'solved': [...]}}
+        self.agent_tasks: dict[int, dict[str, deque[Task]]] = {}
+
+        # Task lists by agent color: {Color: {'future': [...], 'current': [...]}}
+        self.color_tasks: dict[Color | None, dict[str, deque[Task]]] = {}
+
     # ------------------------------------------------------------------
     # Setup (once after parsing)
     # ------------------------------------------------------------------
@@ -38,279 +66,537 @@ class Manager:
         """
         Initialize manager for a new level.
 
-        1. Assign tasks to agents (use Hungarian algorithm)
+        Step 1: Preplanning
+        - Build task lists for each agent and agent-color group
+        - Find all final positions (box goals and agent goals)
+        - Assign initial current tasks to each agent
+        - Perform HCA* preplanning with heuristics
         """
         self.profile = profile
         self.dist_map = DistanceMap.from_state(initial_state)
 
+        # Create agents
         self.agents = [
             Agent(i, self.dist_map, profile) for i in range(profile.num_agents)
         ]
+        self._sync_agent_positions(initial_state)
 
-        # --- Task assignment ---
-        from searchclient.planner.hungarian import (
-            assign,
-            agent_goals_assign,
-            subgoal_order,
-        )
-
-        box_assignment = assign(
-            agents=self.agents,
-            boxes=profile.real_boxes,
-            goals=profile.box_goals,
-            dist_map=self.dist_map,
-        )
-
-        agent_rows0 = initial_state.agent_rows
-        agent_cols0 = initial_state.agent_cols
-
+        # Initialize task lists for each agent
         for agent in self.agents:
-            tasks = box_assignment.get(agent.agent_id, [])
-            if len(tasks) > 1:
-                tasks = subgoal_order(
-                    tasks,
-                    self.dist_map,
-                    start_r=agent_rows0[agent.agent_id],
-                    start_c=agent_cols0[agent.agent_id],
-                )
-            agent.assign_tasks(tasks)
+            self.agent_tasks[agent.agent_id] = {
+                "future": deque(),
+                "current": deque(),
+                "solved": deque(),
+            }
 
-        # --- Agent positional goals ---
-        ag_goals = agent_goals_assign(self.agents, profile.agent_goals)
+        # Initialize task lists for each agent color
         for agent in self.agents:
-            agent.agent_goal = ag_goals.get(agent.agent_id)
+            agent_color = State.agent_colors[agent.agent_id]
+            if agent_color not in self.color_tasks:
+                self.color_tasks[agent_color] = {"future": deque(), "current": deque()}
+
+        # Step 1a: Find all box goals and create move_box tasks for each agent color
+        print("Building box goal tasks...", file=sys.stderr, flush=True)
+        self._build_box_goal_tasks()
+
+        # Step 1b: Find all agent goals and create move_agent tasks
+        print("Building agent goal tasks...", file=sys.stderr, flush=True)
+        self._build_agent_goal_tasks(initial_state)
+
+        # Step 1c: Assign first task from each color group to respective agents
+        print("Assigning initial tasks to agents...", file=sys.stderr, flush=True)
+        self._assign_initial_tasks()
+
+        # Step 1d: Perform HCA* preplanning
+        print("Performing HCA* preplanning...", file=sys.stderr, flush=True)
+        self._hca_preplan(initial_state)
 
         print(
-            f"Manager ready: {profile.num_agents} agents, "
-            f"{len(profile.real_boxes)} plannable boxes, "
-            f"{len(profile.deco_boxes)} decorative.",
+            f"Manager setup complete: {profile.num_agents} agents ready.",
             file=sys.stderr,
             flush=True,
         )
-        for agent in self.agents:
-            n = len(agent.tasks)
+
+    def _build_box_goal_tasks(self) -> None:
+        """
+        Find all box goals in the profile and create move_box tasks.
+        Add to color group future tasks.
+        """
+        assert self.profile is not None
+
+        for goal_r, goal_c, goal_char in self.profile.box_goals:
+            task = Task(
+                task_type="move_box",
+                object_pos=(
+                    goal_r,
+                    goal_c,
+                ),  # initial box position (same as goal for now)
+                goal_pos=(goal_r, goal_c),
+                box_char=goal_char,
+            )
+
+            # Find the actual box and update object_pos
+            # NOTE: this order here might be IMPORTANT !!!
+            for br, bc, box_char in self.profile.real_boxes:
+                if box_char == goal_char:
+                    task.object_pos = (br, bc)
+                    break
+
+            # Get color of the box
+            box_color = (
+                State.box_colors[ord(goal_char) - ord("A")]
+                if goal_char.isupper()
+                else None
+            )
+
+            # Add to color group future tasks
+            if box_color not in self.color_tasks:
+                self.color_tasks[box_color] = {
+                    "future": deque(),
+                    "current": deque(),
+                }
+            self.color_tasks[box_color]["future"].append(task)
+
             print(
-                f"  Agent {agent.agent_id}: {n} task(s).",
+                f"  Box task: {goal_char} {task.object_pos} → {task.goal_pos}",
                 file=sys.stderr,
                 flush=True,
             )
 
-        # --- HCA* Path Planning ---
-        self._hca_plan(initial_state)
-
-    def _hca_plan(self, initial_state: State, allow_recovery: bool = True) -> None:
+    def _build_agent_goal_tasks(self, initial_state: State) -> None:
         """
-        Hierarchical Cooperative A* (HCA*).
-        Plan for each agent sequentially, using previous agents' paths as constraints.
+        Find all agent goals in the profile and create move_agent tasks.
+        Add to respective agent future tasks.
+        """
+        assert self.profile is not None
+
+        for agent_goal_r, agent_goal_c, agent_id in self.profile.agent_goals:
+            if 0 <= agent_id < len(self.agents):
+                task = Task(
+                    task_type="move_agent",
+                    object_pos=(
+                        initial_state.agent_rows[agent_id],
+                        initial_state.agent_cols[agent_id],
+                    ),
+                    goal_pos=(agent_goal_r, agent_goal_c),
+                )
+                self.agent_tasks[agent_id]["future"].append(task)
+
+                print(
+                    f"  Agent {agent_id} goal: {task.object_pos} → {task.goal_pos}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+    def _assign_initial_tasks(self) -> None:
+        """
+        For each agent, assign the first available task from its color group's future tasks.
+        Move that task from future to current.
+        """
+        # Assign one agent per color group
+        assigned_per_color: dict[Color | None, int] = {}
+
+        for color, task_dict in self.color_tasks.items():
+            if task_dict["future"]:
+                # Find an agent with this color that has no current task
+                task = task_dict["future"].popleft()
+
+                for agent in self.agents:
+                    agent_color = State.agent_colors[agent.agent_id]
+                    if (
+                        agent_color == color
+                        and not self.agent_tasks[agent.agent_id]["current"]
+                    ):
+                        self.agent_tasks[agent.agent_id]["current"].append(task)
+                        assigned_per_color[color] = agent.agent_id
+
+                        color_name = color.name if color else "None"
+                        print(
+                            f"  Assigned task to Agent {agent.agent_id} (color {color_name})",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        break
+
+    def _hca_preplan(self, initial_state: State) -> None:
+        """
+        Perform HCA* preplanning for each agent's current task.
+        Use heuristics: distance from agent to box, box to goal.
         """
         from searchclient.planner.astar import solve
 
-        # Build constraints hierarchically
-        all_constraints: list[set[tuple[int, int, int]]] = [set() for _ in self.agents]
-
-        for agent_idx, agent in enumerate(self.agents):
-            if not agent.tasks:
-                # No tasks, agent stays put or goes to agent_goal if exists
-                if agent.agent_goal:
-                    goal = (None, None, agent.agent_goal[0], agent.agent_goal[1])
-                    plan = solve(
-                        initial_state,
-                        agent_idx,
-                        goal,
-                        constraints=all_constraints[agent_idx],
-                        dist_map=self.dist_map,
-                    )
-                    if plan:
-                        agent._plan = plan
+        for agent in self.agents:
+            current_tasks = self.agent_tasks[agent.agent_id]["current"]
+            if not current_tasks:
                 continue
 
-            # Plan for first task
-            task = agent.tasks[0]
-            box_r, box_c, goal_r, goal_c, box_char = task
-            goal = (box_r, box_c, goal_r, goal_c, box_char)
+            current_task = current_tasks[0]
 
-            plan = solve(
-                initial_state,
-                agent_idx,
-                goal,
-                constraints=all_constraints[agent_idx],
-                dist_map=self.dist_map,
-            )
-
-            if plan:
-                agent._plan = plan
-
-                # Extract constraints from this agent's plan
-                # Simulate the plan execution to get occupied cells at each timestep
-                ar, ac = (
-                    initial_state.agent_rows[agent_idx],
-                    initial_state.agent_cols[agent_idx],
+            # Detect same-colored obstacle before planning and swap tasks immediately.
+            if current_task.task_type == "move_box":
+                obstacle_info = self._find_same_color_obstacle(
+                    initial_state, agent.agent_id, current_task
                 )
-                br, bc = box_r, box_c
-
-                timestep = 0
-                for action in plan:
-                    if action.type == ActionType.Move:
-                        ar += action.agent_row_delta
-                        ac += action.agent_col_delta
-                    elif action.type == ActionType.Push:
-                        ar += action.agent_row_delta
-                        ac += action.agent_col_delta
-                        br += action.box_row_delta
-                        bc += action.box_col_delta
-                    elif action.type == ActionType.Pull:
-                        ar += action.agent_row_delta
-                        ac += action.agent_col_delta
-                        br += action.box_row_delta
-                        bc += action.box_col_delta
-
-                    timestep += 1
-                    # Add agent and box positions as constraints for future agents
-                    all_constraints[agent_idx].add((ar, ac, timestep))
-                    if not (br == goal_r and bc == goal_c):
-                        # Only constrain box position if still moving it
-                        all_constraints[agent_idx].add((br, bc, timestep))
-
-                # Propagate constraints to future agents
-                for future_agent_idx in range(agent_idx + 1, len(self.agents)):
-                    all_constraints[future_agent_idx].update(all_constraints[agent_idx])
-            else:
-                print(
-                    f"Agent {agent_idx}: HCA* failed for first task {agent.tasks[0]}.",
-                    file=sys.stderr,
-                    flush=True,
-                )
-
-        print("HCA* planning complete for all agents.", file=sys.stderr, flush=True)
-
-        # Check for failures and attempt recovery once
-        if allow_recovery:
-            self._handle_hca_failures(initial_state)
-
-    def _handle_hca_failures(self, initial_state: State) -> None:
-        """
-        Handle HCA* planning failures.
-        - If a task failed due to same-color box obstacle, reorder tasks
-        - Complex agent-blocking scenarios deferred to PROJECT FUTURE
-        """
-        failed_agents = [a for a in self.agents if not a._plan and a.tasks]
-
-        if not failed_agents:
-            return
-
-        print(
-            f"HCA* recovery: {len(failed_agents)} agents need replanning.",
-            file=sys.stderr,
-            flush=True,
-        )
-
-        # Attempt task reordering for same-color box obstacles
-        for agent in failed_agents:
-            first_task = agent.tasks[0]
-            box_r0, box_c0, goal_r0, goal_c0, box_char = first_task
-
-            # Check if there's another box of same color in the way
-            blocking_box = self._find_blocking_same_color_box(
-                initial_state, box_r0, box_c0, box_char, agent.agent_id
-            )
-
-            if blocking_box:
-                blocking_r, blocking_c, blocking_goal_r, blocking_goal_c = blocking_box
-
-                print(
-                    f"  Detected same-color box obstacle at ({blocking_r}, {blocking_c}) "
-                    f"for Agent {agent.agent_id} targeting ({box_r0}, {box_c0}).",
-                    file=sys.stderr,
-                    flush=True,
-                )
-
-                blocking_task: tuple[int, int, int, int, str] | None = None
-
-                # Find which agent currently owns this blocking box task.
-                for other_agent in self.agents:
-                    for other_task in list(other_agent.tasks):
-                        other_br, other_bc = other_task[0], other_task[1]
-                        if other_br == blocking_r and other_bc == blocking_c:
-                            blocking_task = other_task
-                            other_agent.tasks.remove(other_task)
-                            print(
-                                f"  Moving blocking task from Agent {other_agent.agent_id} "
-                                f"to Agent {agent.agent_id}.",
-                                file=sys.stderr,
-                                flush=True,
-                            )
-                            break
-                    if blocking_task is not None:
-                        break
-
-                if blocking_task is not None:
-                    # Put the blocking task in front so this agent clears its own path first.
-                    # Keep the original task immediately after it.
-                    if agent.tasks and agent.tasks[0] != blocking_task:
-                        original_task = agent.tasks[0]
-                        agent.tasks = [blocking_task, original_task] + agent.tasks[1:]
-                    elif not agent.tasks:
-                        agent.tasks = [blocking_task]
-
+                if obstacle_info is not None:
+                    obs_r, obs_c, obs_char, can_reach_box = obstacle_info
                     print(
-                        f"  Agent {agent.agent_id} will clear the obstacle first, then resume its original task.",
+                        f"  Agent {agent.agent_id}: same-colored obstacle detected before planning; attempting swap.",
                         file=sys.stderr,
                         flush=True,
                     )
+                    if self._swap_task_with_obstacle(
+                        agent.agent_id,
+                        current_task,
+                        (obs_r, obs_c, obs_char),
+                        can_reach_box,
+                    ):
+                        current_task = current_tasks[0]
 
-        # Re-run HCA* after task reordering
+            if current_task.task_type == "move_box":
+                # Box task: agent must move box to goal
+                goal_tuple = (
+                    current_task.object_pos[0],
+                    current_task.object_pos[1],
+                    current_task.goal_pos[0],
+                    current_task.goal_pos[1],
+                    current_task.box_char,
+                )
+            else:
+                # Agent task: just navigate to goal
+                goal_tuple = (
+                    None,
+                    None,
+                    current_task.goal_pos[0],
+                    current_task.goal_pos[1],
+                )
+
+            plan = solve(
+                state=initial_state,
+                agent_id=agent.agent_id,
+                goal=goal_tuple,
+                constraints=set(),
+                dist_map=self.dist_map,
+            )
+
+            if plan is None and current_task.task_type == "move_box":
+                obstacle_info = self._find_same_color_obstacle(
+                    initial_state, agent.agent_id, current_task
+                )
+                if obstacle_info is not None:
+                    obs_r, obs_c, obs_char, can_reach_box = obstacle_info
+                    print(
+                        f"  Agent {agent.agent_id}: same-colored obstacle confirmed during planning; attempting swap.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    if self._swap_task_with_obstacle(
+                        agent.agent_id,
+                        current_task,
+                        (obs_r, obs_c, obs_char),
+                        can_reach_box,
+                    ):
+                        current_task = current_tasks[0]
+                        if current_task.task_type == "move_box":
+                            goal_tuple = (
+                                current_task.object_pos[0],
+                                current_task.object_pos[1],
+                                current_task.goal_pos[0],
+                                current_task.goal_pos[1],
+                                current_task.box_char,
+                            )
+                        else:
+                            goal_tuple = (
+                                None,
+                                None,
+                                current_task.goal_pos[0],
+                                current_task.goal_pos[1],
+                            )
+                        plan = solve(
+                            state=initial_state,
+                            agent_id=agent.agent_id,
+                            goal=goal_tuple,
+                            constraints=set(),
+                            dist_map=self.dist_map,
+                        )
+
+            if plan:
+                agent._plan = plan
+                print(
+                    f"  Agent {agent.agent_id}: HCA* found plan (length {len(plan)})",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            else:
+                print(
+                    f"  Agent {agent.agent_id}: HCA* FAILED for task {current_task}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+    def _find_same_color_obstacle(
+        self,
+        initial_state: State,
+        agent_id: int,
+        failed_task: Task,
+    ) -> tuple[int, int, str, bool] | None:
+        """
+        Return the first blocking box with the same color as failed_task.
+        Also check if agent can actually reach the target box by running A* with only same-colored boxes.
+
+        Returns (obs_r, obs_c, obs_char, can_reach_box) where:
+        - can_reach_box is True if agent can reach the box (A* finds a path avoiding same-colored boxes)
+        - can_reach_box is False if agent cannot reach the box (blocked by same-colored boxes)
+        """
+        from searchclient.planner.astar import solve
+
+        if failed_task.box_char is None:
+            return None
+
+        agent = self.agents[agent_id]
+        agent_r = initial_state.agent_rows[agent_id]
+        agent_c = initial_state.agent_cols[agent_id]
+
+        obstacle = agent._find_path_obstacle(
+            initial_state,
+            agent_r,
+            agent_c,
+            failed_task.object_pos[0],
+            failed_task.object_pos[1],
+        )
+        if obstacle is None:
+            return None
+
+        obs_r, obs_c, obs_char = obstacle
+        target_color = State.box_colors[ord(failed_task.box_char) - ord("A")]
+        obstacle_color = State.box_colors[ord(obs_char) - ord("A")]
+        if target_color is None or obstacle_color != target_color:
+            return None
+
+        # Check if agent can reach the target box by running A* with only same-colored boxes.
+        # Create a modified state with all non-target boxes removed.
+        modified_boxes = [row[:] for row in initial_state.boxes]  # Deep copy 2D list
+
+        for r in range(len(modified_boxes)):
+            for c in range(len(modified_boxes[r])):
+                box_char = modified_boxes[r][c]
+                if box_char == "":  # empty slot
+                    continue
+                box_color = State.box_colors[ord(box_char) - ord("A")]
+                if box_color != target_color:
+                    modified_boxes[r][c] = ""  # Remove non-target boxes
+
+        modified_state = State(
+            agent_rows=initial_state.agent_rows[:],
+            agent_cols=initial_state.agent_cols[:],
+            boxes=modified_boxes,
+        )
+
+        # Run A* from agent to target box position (navigation only, no pushing)
+        goal = (None, None, failed_task.object_pos[0], failed_task.object_pos[1])
+        plan = solve(
+            state=modified_state,
+            agent_id=agent_id,
+            goal=goal,
+            constraints=set(),
+            dist_map=self.dist_map,
+        )
+
+        can_reach_box = plan is not None
+
+        return (obs_r, obs_c, obs_char, can_reach_box)
+
+    def _swap_task_with_obstacle(
+        self,
+        agent_id: int,
+        failed_task: Task,
+        obstacle: tuple[int, int, str],
+        can_reach_box: bool,
+    ) -> bool:
+        """
+        Swap current task with an obstacle task if possible.
+
+        Args:
+            agent_id: ID of the agent with the failed task
+            failed_task: The task that failed to plan
+            obstacle: (obs_r, obs_c, obs_char) position and char of the blocking box
+            can_reach_box: True if agent can reach the box (obstacle before box),
+                          False if agent cannot reach the box (obstacle at box position)
+        """
+        assert self.profile is not None
+
+        obs_r, obs_c, obs_char = obstacle
+
         print(
-            "HCA* recovery: rerunning with reordered tasks.",
+            f"  Same-colored obstacle detected: box {obs_char} at ({obs_r}, {obs_c}) blocks Agent {agent_id}.",
             file=sys.stderr,
             flush=True,
         )
-        for agent in self.agents:
-            agent._plan = []
-            agent._plan_index = 0
 
-        self._hca_plan(initial_state, allow_recovery=False)
+        current_tasks = self.agent_tasks[agent_id]["current"]
+        if not current_tasks:
+            print(
+                f"  Swap failed: Agent {agent_id} has no current task list.",
+                file=sys.stderr,
+                flush=True,
+            )
+            return False
 
-    def _find_blocking_same_color_box(
-        self,
-        state: State,
-        target_r: int,
-        target_c: int,
-        target_char: str,
-        agent_id: int,
-    ) -> tuple | None:
-        """
-        Check if there's another box of same color between agent and target box.
-        Returns (box_r, box_c, goal_r, goal_c) of blocking box, or None.
-        """
-        assert self.profile is not None
-        agent_r = state.agent_rows[agent_id]
-        agent_c = state.agent_cols[agent_id]
+        assert failed_task.box_char is not None
+        target_color = State.box_colors[ord(failed_task.box_char) - ord("A")]
+        assert target_color is not None
 
-        # Find all boxes of same color
-        for br, bc, char in self.profile.real_boxes:
-            if char != target_char or (br == target_r and bc == target_c):
-                continue  # Skip target box itself
+        # First try to find that obstacle task in the color future list.
+        color_bucket = self.color_tasks.setdefault(
+            target_color, {"future": deque(), "current": deque()}
+        )
+        future_tasks = color_bucket["future"]
 
-            # Check if this box is between agent and target
-            # Simple heuristic: if it's roughly on the path
-            dy_agent_blocking = abs(agent_r - br)
-            dy_blocking_target = abs(br - target_r)
-            dx_agent_blocking = abs(agent_c - bc)
-            dx_blocking_target = abs(bc - target_c)
+        obstacle_index = next(
+            (
+                i
+                for i, task in enumerate(future_tasks)
+                if task.task_type == "move_box"
+                and task.box_char == obs_char
+                and task.object_pos == (obs_r, obs_c)
+            ),
+            None,
+        )
 
-            # If blocking box is along the path (within taxicab distance)
-            if (
-                dy_agent_blocking + dy_blocking_target <= abs(agent_r - target_r) + 2
-                and dx_agent_blocking + dx_blocking_target
-                <= abs(agent_c - target_c) + 2
-            ):
+        obstacle_assigned_to_agent_id = None
+        for other_agent in self.agents:
 
-                # Find goal for this box in profile
-                for goal_r, goal_c, goal_char in self.profile.box_goals:
-                    if goal_char == char:
-                        return (br, bc, goal_r, goal_c)
+            other_current = self.agent_tasks[other_agent.agent_id]["current"]
+            for idx, task in enumerate(other_current):
+                if (
+                    task.task_type == "move_box"
+                    and task.box_char == obs_char
+                    and task.object_pos == (obs_r, obs_c)
+                ):
+                    obstacle_assigned_to_agent_id = other_agent.agent_id
+                    print(
+                        f"Obstacle task for box {obs_char} at ({obs_r}, {obs_c}) is currently assigned to Agent {other_agent.agent_id}.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    break
 
-        return None
+        if obstacle_index is None and obstacle_assigned_to_agent_id is None:
+
+            new_task = Task(
+                task_type="move_box",
+                object_pos=(
+                    (failed_task.object_pos) if can_reach_box else (obs_r, obs_c)
+                ),
+                goal_pos=(
+                    self.agents[agent_id].agent_row,
+                    self.agents[agent_id].agent_col,
+                ),
+                box_char=obs_char,
+            )
+
+            # # remove failed_task from current tasks and add to front of future tasks
+            failed_task = current_tasks.popleft()
+            if can_reach_box is False:
+                failed_task.object_pos = (obs_r, obs_c)
+            future_tasks.appendleft(failed_task)
+
+            current_tasks.appendleft(new_task)
+
+            print(
+                f"Swapped tasks, was able to reach box directly: {can_reach_box}.",
+                file=sys.stderr,
+                flush=True,
+            )
+            # print(
+            #     f"  No future task found for obstacle box {obs_char} at ({obs_r}, {obs_c}) nor any current task found for other agents. "
+            #     + " Just adding a new task to the front of the current task list for Agent {agent_id}.",
+            #     file=sys.stderr,
+            #     flush=True,
+            # )
+
+            return True
+
+        print("Swapping edgecase NOT IMPLEMENTED YET")
+        return False
+
+        # if obstacle_index is not None:
+        #     obstacle_task = future_tasks.pop(obstacle_index)
+
+        #     obstacle_goal_x, obstacle_goal_y = obstacle_task.goal_pos
+        #     failed_goal_x, failed_goal_y = failed_task.goal_pos
+
+        #     obstacle_task.goal_pos = (failed_goal_x, failed_goal_y)
+        #     failed_task.goal_pos = (obstacle_goal_x, obstacle_goal_y)
+
+        #     future_tasks.insert(0, failed_task)
+        #     current_tasks[0] = obstacle_task
+        #     print(
+        #         f"  Swapped current task with future obstacle task for Agent {agent_id}.",
+        #         file=sys.stderr,
+        #         flush=True,
+        #     )
+        #     return True
+
+        # # NOTE: now we need to consider 2 cases:
+        # """
+        # 0. obstacle doesnt have a task
+        # 1. same coloured agent but different one has that task of the obstacle - we will skip this one for now
+        # """
+
+        # for other_agent in self.agents:
+        #     if other_agent.agent_id == agent_id:
+        #         continue
+
+        #     other_current = self.agent_tasks[other_agent.agent_id]["current"]
+        #     for idx, task in enumerate(other_current):
+        #         if (
+        #             task.task_type == "move_box"
+        #             and task.box_char == obs_char
+        #             and task.object_pos == (obs_r, obs_c)
+        #         ):
+        #             print(
+        #                 f"  Found another agent {other_agent.agent_id} currently "
+        #                 + f"assigned to the obstacle task. This case IS NOT YET IMPLEMENTED, so swap failed for Agent {agent_id}.",
+        #                 file=sys.stderr,
+        #                 flush=True,
+        #             )
+        #             return False
+
+        # print(
+        #     f"No future task found for obstacle box {obs_char} at ({obs_r}, {obs_c}) nor any current task found for other agents. "
+        #     + " Just replacing the current task with the obstacle task",
+        #     file=sys.stderr,
+        #     flush=True,
+        # )
+        # self.agent_tasks[agent_id]["current"][0].object_pos = (obs_r, obs_c)
+
+        # return True
+
+        # Fallback: look for another agent that currently owns the obstacle task.
+        # for other_agent in self.agents:
+        #     other_current = self.agent_tasks[other_agent.agent_id]["current"]
+        #     for idx, task in enumerate(other_current):
+        # if (
+        #     task.task_type == "move_box"
+        #     and task.box_char == obs_char
+        #             and task.object_pos == (obs_r, obs_c)
+        #         ):
+        #             other_current[idx] = failed_task
+        #             current_tasks[0] = task
+        #             print(
+        #                 f"  Swapped current tasks between Agent {agent_id} and Agent {other_agent.agent_id}.",
+        #                 file=sys.stderr,
+        #                 flush=True,
+        #             )
+        #             return True
+
+        print(
+            f"  Swap failed: no task entry found for obstacle box {obs_char} at ({obs_r}, {obs_c}).",
+            file=sys.stderr,
+            flush=True,
+        )
+
+        return False
 
     # ------------------------------------------------------------------
     # Main loop (called every turn)
@@ -320,11 +606,21 @@ class Manager:
         """
         Execute the next timestep: all agents execute their next planned action.
         """
+        self._sync_agent_positions(joint_state)
+
         joint_action = []
         for agent in self.agents:
             action = agent.next_action()
             joint_action.append(action)
         return joint_action
+
+    def _sync_agent_positions(self, joint_state: State) -> None:
+        """Cache the latest row/col position for each agent."""
+        for agent in self.agents:
+            agent.update_position(
+                joint_state.agent_rows[agent.agent_id],
+                joint_state.agent_cols[agent.agent_id],
+            )
 
     # ------------------------------------------------------------------
     # Termination
