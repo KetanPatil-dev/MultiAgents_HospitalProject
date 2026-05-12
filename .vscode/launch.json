@@ -38,6 +38,24 @@
 			"preLaunchTask": "Launch MAPF Server SingularWardRush"
 		},
 		{
+			"name": "MAS SingularWardRushv2",
+			"type": "debugpy",
+			"request": "attach",
+			"internalConsoleOptions": "openOnFirstSessionStart",
+			"connect": {
+				"host": "localhost",
+				"port": 1234
+			},
+			"pathMappings": [
+				{
+					"localRoot": "${workspaceFolder}",
+					"remoteRoot": "."
+				}
+			],
+			"justMyCode": true,
+			"preLaunchTask": "Launch MAPF Server SingularWardRushv2"
+		},
+		{
 			"name": "MAS EasyWardRush",
 			"type": "debugpy",
 			"request": "attach",
@@ -53,7 +71,18 @@
 				}
 			],
 			"justMyCode": true,
-			"preLaunchTask": "Launch MAPF Server EasyWardRush"
+			"preLaunchTask": "Launch MAPF Server ZeroWardRush"
+		},
+		{
+			"name": "Client",
+			"type": "debugpy",
+			"request": "launch",
+			"console": "internalConsole",
+			"program": "${workspaceFolder}/searchclient_python/searchclient/client.py",
+			"env": {
+				"PYTHONPATH": "searchclient_python"
+			},
+			"args": ["--bypass-debugger"]
 		}
 	]
 }

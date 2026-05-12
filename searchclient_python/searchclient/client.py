@@ -59,10 +59,7 @@ def main(args: argparse.Namespace) -> None:
         joint_action = manager.get_joint_action(current_state)
 
         # Send joint action to server (one line: "act1|act2|...")
-        print(
-            "|".join(a.name_ for a in joint_action),
-            flush=True,
-        )
+        print("|".join(a.name_ for a in joint_action), flush=True)
 
         # Read server response (must drain stdin to avoid blocking server)
         response = server_messages.readline()
@@ -87,7 +84,9 @@ def main(args: argparse.Namespace) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Multi-agent hospital client.")
+    parser = argparse.ArgumentParser(
+        description="Multi-agent hospital client.", exit_on_error=False
+    )
     parser.add_argument(
         "--max-memory",
         metavar="<MB>",
@@ -100,7 +99,13 @@ if __name__ == "__main__":
         action="store_true",
         help="Bypass debugger wait (for local testing without debugpy).",
     )
-    args = parser.parse_args()
+
+    try:
+        args = parser.parse_args()
+    except Exception as e:
+        print(f"Error parsing arguments: {e}", file=sys.stderr)
+        args = parser.parse_args([])  # fallback to defaults
+
     memory.max_usage = args.max_memory
 
     if not args.bypass_debugger:

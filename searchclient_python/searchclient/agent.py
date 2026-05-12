@@ -17,6 +17,7 @@ import sys
 from typing import TYPE_CHECKING
 
 from searchclient.action import Action
+from searchclient.Task import Task
 
 if TYPE_CHECKING:
     from searchclient.heuristics import DistanceMap
@@ -35,6 +36,7 @@ class Agent:
         self.agent_id = agent_id
         self.dist_map = dist_map
         self.profile = profile
+        self.task: Task | None = None
 
         # Current position of this agent in the latest observed joint state.
         # Kept in sync by the Manager so other components can inspect it.
@@ -43,10 +45,11 @@ class Agent:
 
         # Task queue: each task is (box_r, box_c, goal_r, goal_c, box_char)
         # box_r/box_c are INITIAL positions; replan always finds current position.
-        self.tasks: list[tuple] = []
+        # self.tasks: list[tuple] = []
 
         # Optional positional goal for the agent itself (no box)
         self.agent_goal: tuple[int, int] | None = None
+        self.has_reached_its_goal: bool = False
 
         # Current plan and index
         self._plan: list[Action] = []
