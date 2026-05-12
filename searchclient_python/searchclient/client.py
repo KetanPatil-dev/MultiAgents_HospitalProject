@@ -42,7 +42,8 @@ def main(args: argparse.Namespace) -> None:
         f"{profile.num_agents} agents, "
         f"{len(profile.real_boxes)} real boxes, "
         f"{len(profile.deco_boxes)} deco boxes.",
-        file=sys.stderr, flush=True,
+        file=sys.stderr,
+        flush=True,
     )
 
     # --- CAPA 2+3+4: Setup manager ---
@@ -75,7 +76,8 @@ def main(args: argparse.Namespace) -> None:
         if t % 500 == 0:
             print(
                 f"t={t}, memory={memory.get_usage():.1f}/{memory.max_usage:.0f} MB",
-                file=sys.stderr, flush=True,
+                file=sys.stderr,
+                flush=True,
             )
 
     if manager.is_done(current_state):
@@ -93,6 +95,17 @@ if __name__ == "__main__":
         default=10048.0,
         help="Soft memory limit in MB.",
     )
+    parser.add_argument(
+        "--bypass-debugger",
+        action="store_true",
+        help="Bypass debugger wait (for local testing without debugpy).",
+    )
     args = parser.parse_args()
     memory.max_usage = args.max_memory
+
+    if not args.bypass_debugger:
+        import debugpy
+
+        debugpy.listen(("localhost", 1234))
+        debugpy.wait_for_client()
     main(args)

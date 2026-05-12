@@ -6,4 +6,4 @@ if [ "$#" -ne 1 ]; then
 fi
 
 LEVEL="$1"
-PYTHONPATH=searchclient_python java -jar server.jar -l "$LEVEL" -c "python3 -m searchclient.client" -t 180 -s 300 -g
+PYTHONPATH=searchclient_python java -jar server.jar -l "$LEVEL" -c "python3 -m searchclient.client --bypass-debugger" -t 180 -s 300 -g
