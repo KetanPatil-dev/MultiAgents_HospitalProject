@@ -4,7 +4,7 @@
 		{
 			"label": "Launch MAPF Server ZeroWardRush",
 			"type": "shell",
-			"command": "PYTHONPATH=searchclient_python java -jar server.jar -l custom/ZeroWardRush.lvl -c \"python -m searchclient.client\" -g 200 -s 300",
+			"command": "PYTHONPATH=searchclient_python java -jar server.jar -l custom/ZeroWardRush.lvl -c \"python -m searchclient.client\" -g 200 -s 100",
 			"isBackground": true,
 			"presentation": {
 				"reveal": "always",
@@ -15,7 +15,7 @@
 		{
 			"label": "Launch MAPF Server SingularWardRush",
 			"type": "shell",
-			"command": "PYTHONPATH=searchclient_python java -jar server.jar -l custom/SingularWardRush.lvl -c \"python -m searchclient.client\" -g 200 -s 300",
+			"command": "PYTHONPATH=searchclient_python java -jar server.jar -l custom/SingularWardRush.lvl -c \"python -m searchclient.client\" -g 200 -s 100",
 			"isBackground": true,
 			"presentation": {
 				"reveal": "always",
@@ -26,7 +26,18 @@
 		{
 			"label": "Launch MAPF Server SingularWardRushv2",
 			"type": "shell",
-			"command": "PYTHONPATH=searchclient_python java -jar server.jar -l custom/SingularWardRushv2.lvl -c \"python -m searchclient.client\" -g 200 -s 300",
+			"command": "PYTHONPATH=searchclient_python java -jar server.jar -l custom/SingularWardRushv2.lvl -c \"python -m searchclient.client\" -g 200 -s 100",
+			"isBackground": true,
+			"presentation": {
+				"reveal": "always",
+				"panel": "new"
+			},
+			"problemMatcher": []
+		},
+		{
+			"label": "Launch MAPF Server SingularWardRushv3",
+			"type": "shell",
+			"command": "PYTHONPATH=searchclient_python java -jar server.jar -l custom/SingularWardRushv3.lvl -c \"python -m searchclient.client\" -g 200 -s 100",
 			"isBackground": true,
 			"presentation": {
 				"reveal": "always",
@@ -37,7 +48,7 @@
 		{
 			"label": "Launch MAPF Server EasyWardRush",
 			"type": "shell",
-			"command": "PYTHONPATH=searchclient_python java -jar server.jar -l custom/EasyWardRush.lvl -c \"python -m searchclient.client\" -g 200 -s 300",
+			"command": "PYTHONPATH=searchclient_python java -jar server.jar -l custom/EasyWardRush.lvl -c \"python -m searchclient.client\" -g 200 -s 100",
 			"isBackground": true,
 			"presentation": {
 				"reveal": "always",

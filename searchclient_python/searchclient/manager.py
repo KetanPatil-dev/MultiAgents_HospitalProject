@@ -365,121 +365,6 @@ class Manager:
         return self._preplan_for_agent(agent_id, joint_state, self.timestep)
         # return self.agents[agent_id].preplan(joint_state, self.timestep)
 
-    # def _hca_preplan(self, initial_state: State) -> None:
-    #     """
-    #     Perform HCA* preplanning for each agent's current task.
-    #     Use heuristics: distance from agent to box, box to goal.
-    #     """
-    #     from searchclient.planner.astar import solve
-
-    #     for agent in self.agents:
-    #         current_tasks = self.agent_tasks[agent.agent_id]["current"]
-    #         if not current_tasks:
-    #             continue
-
-    #         current_task = current_tasks[0]
-
-    #         # Detect same-colored obstacle before planning and swap tasks immediately.
-    #         if current_task.task_type == "move_box":
-    #             obstacle_info = self._find_same_color_obstacle(
-    #                 initial_state, agent.agent_id, current_task
-    #             )
-    #             if obstacle_info is not None:
-    #                 obs_r, obs_c, obs_char, can_reach_box = obstacle_info
-    #                 print(
-    #                     f"  Agent {agent.agent_id}: same-colored obstacle detected before planning; attempting swap.",
-    #                     file=sys.stderr,
-    #                     flush=True,
-    #                 )
-    #                 if self._swap_task_with_obstacle(
-    #                     agent.agent_id,
-    #                     current_task,
-    #                     (obs_r, obs_c, obs_char),
-    #                     can_reach_box,
-    #                 ):
-    #                     current_task = current_tasks[0]
-
-    #         if current_task.task_type == "move_box":
-    #             # Box task: agent must move box to goal
-    #             goal_tuple = (
-    #                 current_task.object_pos[0],
-    #                 current_task.object_pos[1],
-    #                 current_task.goal_pos[0],
-    #                 current_task.goal_pos[1],
-    #                 current_task.box_char,
-    #             )
-    #         else:
-    #             # Agent task: just navigate to goal
-    #             goal_tuple = (
-    #                 None,
-    #                 None,
-    #                 current_task.goal_pos[0],
-    #                 current_task.goal_pos[1],
-    #             )
-
-    #         plan = solve(
-    #             state=initial_state,
-    #             agent_id=agent.agent_id,
-    #             goal=goal_tuple,
-    #             constraints=set(),
-    #             dist_map=self.dist_map,
-    #         )
-
-    #         if plan is None and current_task.task_type == "move_box":
-    #             obstacle_info = self._find_same_color_obstacle(
-    #                 initial_state, agent.agent_id, current_task
-    #             )
-    #             if obstacle_info is not None:
-    #                 obs_r, obs_c, obs_char, can_reach_box = obstacle_info
-    #                 print(
-    #                     f"  Agent {agent.agent_id}: same-colored obstacle confirmed during planning; attempting swap.",
-    #                     file=sys.stderr,
-    #                     flush=True,
-    #                 )
-    #                 if self._swap_task_with_obstacle(
-    #                     agent.agent_id,
-    #                     current_task,
-    #                     (obs_r, obs_c, obs_char),
-    #                     can_reach_box,
-    #                 ):
-    #                     current_task = current_tasks[0]
-    #                     if current_task.task_type == "move_box":
-    #                         goal_tuple = (
-    #                             current_task.object_pos[0],
-    #                             current_task.object_pos[1],
-    #                             current_task.goal_pos[0],
-    #                             current_task.goal_pos[1],
-    #                             current_task.box_char,
-    #                         )
-    #                     else:
-    #                         goal_tuple = (
-    #                             None,
-    #                             None,
-    #                             current_task.goal_pos[0],
-    #                             current_task.goal_pos[1],
-    #                         )
-    #                     plan = solve(
-    #                         state=initial_state,
-    #                         agent_id=agent.agent_id,
-    #                         goal=goal_tuple,
-    #                         constraints=set(),
-    #                         dist_map=self.dist_map,
-    #                     )
-
-    #         if plan:
-    #             agent._plan = plan
-    #             print(
-    #                 f"  Agent {agent.agent_id}: HCA* found plan (length {len(plan)})",
-    #                 file=sys.stderr,
-    #                 flush=True,
-    #             )
-    #         else:
-    #             print(
-    #                 f"  Agent {agent.agent_id}: HCA* FAILED for task {current_task}",
-    #                 file=sys.stderr,
-    #                 flush=True,
-    #             )
-
     def _preplan_for_agent(
         self, agent_id: int, joint_state: State, timestep: int
     ) -> bool:
@@ -591,9 +476,11 @@ class Manager:
         from searchclient.planner.astar import solve
 
         if failed_task.box_char is None:
-            return None
+            target_color = State.agent_colors[agent_id]
+            # return None
+        else:
+            target_color = State.box_colors[ord(failed_task.box_char) - ord("A")]
 
-        target_color = State.box_colors[ord(failed_task.box_char) - ord("A")]
         if target_color is None:
             return None
 
@@ -682,8 +569,11 @@ class Manager:
             )
             return False
 
-        assert failed_task.box_char is not None
-        target_color = State.box_colors[ord(failed_task.box_char) - ord("A")]
+        # assert failed_task.box_char is not None
+        if failed_task.box_char is None:
+            target_color = State.agent_colors[agent_id]
+        else:
+            target_color = State.box_colors[ord(failed_task.box_char) - ord("A")]
         assert target_color is not None
 
         # First try to find that obstacle task in the color future list.
@@ -742,7 +632,24 @@ class Manager:
             if can_reach_box is True:
                 failed_task.object_pos = (obs_r, obs_c)
 
-            self.color_tasks[target_color]["future_box_tasks"].appendleft(failed_task)
+            if failed_task.task_type == "move_box" and failed_task.box_char is not None:
+                self.color_tasks[target_color]["future_box_tasks"].appendleft(
+                    failed_task
+                )
+            elif (
+                failed_task.task_type == "move_agent"
+                and failed_task.goal_pos is not None
+            ):
+                self.color_tasks[target_color]["future_agent_tasks"].appendleft(
+                    failed_task
+                )
+            else:
+                print(
+                    f"  Swap failed: failed task is not properly formed for re-queuing.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return False
 
             self.agents[agent_id].task = new_task
             self._sync_agent_task_state(agent_id, new_task)
