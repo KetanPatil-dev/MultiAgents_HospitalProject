@@ -66,14 +66,6 @@ class Manager:
         ]
         self._sync_agent_positions(initial_state)
 
-        # # Initialize task lists for each agent
-        # for agent in self.agents:
-        #     self.agent_tasks[agent.agent_id] = {
-        #         "future": deque(),
-        #         "current": deque(),
-        #         "solved": deque(),
-        #     }
-
         # Initialize task lists for each agent color
         for agent in self.agents:
             agent_color = State.agent_colors[agent.agent_id]
@@ -84,154 +76,6 @@ class Manager:
                     future_agent_tasks=deque(),
                     solved_tasks=deque(),
                 )
-
-        # Step 1a: Find all box goals and create move_box tasks for each agent color
-        print("Building box goal tasks...", file=sys.stderr, flush=True)
-        self._build_box_goal_tasks()
-
-        # Step 1b: Find all agent goals and create move_agent tasks
-        print("Building agent goal tasks...", file=sys.stderr, flush=True)
-        self._build_agent_goal_tasks(initial_state)
-
-        # # Step 1c: Assign first task from each color group to respective agents
-        # print("Assigning initial tasks to agents...", file=sys.stderr, flush=True)
-        # self._assign_initial_tasks()
-
-        # # Step 1d: Perform HCA* preplanning
-        # print("Performing HCA* preplanning...", file=sys.stderr, flush=True)
-        # self._hca_preplan(initial_state)
-
-        print(
-            f"Manager setup complete: {profile.num_agents} agents ready.",
-            file=sys.stderr,
-            flush=True,
-        )
-
-    def _build_box_goal_tasks(self) -> None:
-        """
-        Find all box goals in the profile and create move_box tasks.
-        Add to color group future tasks.
-        """
-        assert self.profile is not None
-
-        for goal_r, goal_c, goal_char in self.profile.box_goals:
-            task = Task(
-                task_type="move_box",
-                object_pos=(
-                    goal_r,
-                    goal_c,
-                ),  # initial box position (same as goal for now)
-                goal_pos=(goal_r, goal_c),
-                box_char=goal_char,
-                crucial=True,
-            )
-
-            # Find the actual box and update object_pos
-            # NOTE: this order here might be IMPORTANT !!!
-            for br, bc, box_char in self.profile.real_boxes:
-                if box_char == goal_char:
-                    task.object_pos = (br, bc)
-                    break
-
-            # Get color of the box
-            box_color = (
-                State.box_colors[ord(goal_char) - ord("A")]
-                if goal_char.isupper()
-                else None
-            )
-
-            # Add to color group future tasks
-            # if box_color not in self.color_tasks:
-            #     self.color_tasks[box_color] = {
-            #         "future": deque(),
-            #         "current": deque(),
-            #     }
-            self.color_tasks[box_color]["future_box_tasks"].append(task)
-
-            print(
-                f"  Box task: {goal_char} {task.object_pos} → {task.goal_pos}",
-                file=sys.stderr,
-                flush=True,
-            )
-
-    def _build_agent_goal_tasks(self, initial_state: State) -> None:
-        """
-        Find all agent goals in the profile and create move_agent tasks.
-        Add to respective agent future tasks.
-        """
-        assert self.profile is not None
-
-        for agent_goal_r, agent_goal_c, agent_id in self.profile.agent_goals:
-            if 0 <= agent_id < len(self.agents):
-                task = Task(
-                    task_type="move_agent",
-                    object_pos=(
-                        initial_state.agent_rows[agent_id],
-                        initial_state.agent_cols[agent_id],
-                    ),
-                    goal_pos=(agent_goal_r, agent_goal_c),
-                    crucial=True,
-                )
-                # self.color_tasks[agent_id]["future_agent_tasks"].append(task)
-                self.color_tasks[State.agent_colors[agent_id]][
-                    "future_agent_tasks"
-                ].append(task)
-
-                print(
-                    f"  Agent {agent_id} goal: {task.object_pos} → {task.goal_pos}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-
-    # def _assign_initial_tasks(self) -> None:
-    #     """
-    #     For each agent, assign the first available task from its color group's future tasks.
-    #     Move that task from future to current.
-    #     """
-
-    #     for agent in self.agents:
-    #         agent_color = State.agent_colors[agent.agent_id]
-    #         color_bucket = self.color_tasks.get(agent_color)
-    #         if color_bucket is not None:
-    #             if color_bucket["future_box_tasks"]:
-    #                 task = color_bucket["future_box_tasks"].popleft()
-    #                 agent.task = task
-    #                 self._sync_agent_task_state(agent.agent_id, task)
-    #             elif color_bucket["future_agent_tasks"]:
-    #                 task = color_bucket["future_agent_tasks"].popleft()
-    #                 agent.task = task
-    #                 self._sync_agent_task_state(agent.agent_id, task)
-
-    #     # # Assign one agent per color group
-    #     # assigned_per_color: dict[Color | None, int] = {}
-
-    #     # for color, task_dict in self.color_tasks.items():
-    #     #     if task_dict["future_box_tasks"]:
-    #     #         # Find an agent with this color that has no current task
-    #     #         task = task_dict["future_box_tasks"].popleft()
-
-    #     #         for agent in self.agents:
-    #     #             agent_color = State.agent_colors[agent.agent_id]
-
-    #     #             if (
-    #     #                 agent_color == color
-    #     #                 and
-    #     #             ):
-    #     #                 self.agent_tasks[agent.agent_id]["current"].append(task)
-    #     #                 color_bucket = self.color_tasks.setdefault(
-    #     #                     color, {"future": deque(), "current": deque()}
-    #     #                 )
-    #     #                 color_bucket["current"].append(task)
-    #     #                 self._sync_agent_task_state(agent.agent_id, task)
-    #     #                 assigned_per_color[color] = agent.agent_id
-
-    #     #                 color_name = color.name if color else "None"
-    #     #                 print(
-    #     #                     f"  Assigned task to Agent {agent.agent_id} (color {color_name})",
-    #     #                     file=sys.stderr,
-    #     #                     flush=True,
-    #     #                 )
-    #     #                 break
 
     def _sync_agent_task_state(self, agent_id: int, task: Task) -> None:
         """
@@ -286,6 +130,10 @@ class Manager:
                     return None
 
                 task = color_bucket["future_agent_tasks"].popleft()
+                task.object_pos = (
+                    self.agents[agent_id].agent_row,
+                    self.agents[agent_id].agent_col,
+                )
                 return task
         return None
 
@@ -308,8 +156,6 @@ class Manager:
                 return self._preplan_for_agent(agent_id, joint_state, self.timestep)
             return False
 
-        # finished_task = current_tasks.popleft()
-        # self.agent_tasks[agent_id]["solved"].append(finished_task)
         self.color_tasks[State.agent_colors[agent_id]]["solved_tasks"].append(
             current_task
         )
@@ -319,19 +165,6 @@ class Manager:
 
         if current_task.task_type == "move_agent" and current_task.crucial is True:
             self.agents[agent_id].has_reached_its_goal = True
-
-        # if current_task.task_type == "move_box" and current_task.box_char is not None:
-        #     finished_color = State.box_colors[ord(current_task.box_char) - ord("A")]
-        #     color_bucket = self.color_tasks.get(finished_color)
-        #     if color_bucket is not None and color_bucket["current"]:
-        #         for idx, task in enumerate(color_bucket["current"]):
-        #             if (
-        #                 task.task_type == finished_task.task_type
-        #                 and task.box_char == finished_task.box_char
-        #                 and task.goal_pos == finished_task.goal_pos
-        #             ):
-        #                 color_bucket["current"].remove(task)
-        #                 break
 
         print(
             f"  Agent {agent_id}: current task solved, moved to solved list.",
@@ -363,7 +196,6 @@ class Manager:
         )
 
         return self._preplan_for_agent(agent_id, joint_state, self.timestep)
-        # return self.agents[agent_id].preplan(joint_state, self.timestep)
 
     def _preplan_for_agent(
         self, agent_id: int, joint_state: State, timestep: int
@@ -506,13 +338,28 @@ class Manager:
         agent_r = initial_state.agent_rows[agent_id]
         agent_c = initial_state.agent_cols[agent_id]
 
-        obstacle = agent._find_path_obstacle(
-            initial_state,
-            agent_r,
-            agent_c,
-            failed_task.object_pos[0],
-            failed_task.object_pos[1],
-        )
+        if failed_task.task_type == "move_box":
+            obstacle = agent._find_path_obstacle(
+                initial_state,
+                agent_r,
+                agent_c,
+                failed_task.object_pos[0],
+                failed_task.object_pos[1],
+            )
+        elif failed_task.task_type == "move_agent":
+            obstacle = agent._find_path_obstacle(
+                initial_state,
+                agent_r,
+                agent_c,
+                failed_task.goal_pos[0],
+                failed_task.goal_pos[1],
+            )
+        else:
+            print(
+                f"  Unknown task type for obstacle detection: {failed_task.task_type}",
+                file=sys.stderr,
+                flush=True,
+            )
         if obstacle is None:
             return None
 

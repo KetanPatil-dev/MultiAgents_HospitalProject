@@ -46,6 +46,17 @@
 			"problemMatcher": []
 		},
 		{
+			"label": "Launch MAPF Server SingularWardRushv4",
+			"type": "shell",
+			"command": "PYTHONPATH=searchclient_python java -jar server.jar -l custom/SingularWardRushv4.lvl -c \"python -m searchclient.client\" -g 200 -s 100",
+			"isBackground": true,
+			"presentation": {
+				"reveal": "always",
+				"panel": "new"
+			},
+			"problemMatcher": []
+		},
+		{
 			"label": "Launch MAPF Server EasyWardRush",
 			"type": "shell",
 			"command": "PYTHONPATH=searchclient_python java -jar server.jar -l custom/EasyWardRush.lvl -c \"python -m searchclient.client\" -g 200 -s 100",
