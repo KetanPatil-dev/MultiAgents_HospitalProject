@@ -208,6 +208,11 @@ class Manager:
                         and not self.agent_tasks[agent.agent_id]["current"]
                     ):
                         self.agent_tasks[agent.agent_id]["current"].append(task)
+                        color_bucket = self.color_tasks.setdefault(
+                            color, {"future": deque(), "current": deque()}
+                        )
+                        color_bucket["current"].append(task)
+                        self._sync_agent_task_state(agent.agent_id, task)
                         assigned_per_color[color] = agent.agent_id
 
                         color_name = color.name if color else "None"
@@ -217,6 +222,117 @@ class Manager:
                             flush=True,
                         )
                         break
+
+    def _sync_agent_task_state(self, agent_id: int, task: Task) -> None:
+        """
+        Keep the Agent's internal task/goal fields aligned with the manager task.
+        This allows Agent.replan() to work after task completion.
+        """
+        agent = self.agents[agent_id]
+
+        if task.task_type == "move_box":
+            assert task.box_char is not None
+            agent.tasks = [
+                (
+                    task.object_pos[0],
+                    task.object_pos[1],
+                    task.goal_pos[0],
+                    task.goal_pos[1],
+                    task.box_char,
+                )
+            ]
+            agent.agent_goal = None
+        else:
+            agent.tasks = []
+            agent.agent_goal = task.goal_pos
+
+    def _task_is_solved(self, joint_state: State, agent_id: int, task: Task) -> bool:
+        """Return True if the task has already been completed in the joint state."""
+        if task.task_type == "move_box":
+            if task.box_char is None:
+                return False
+            gr, gc = task.goal_pos
+            return joint_state.boxes[gr][gc] == task.box_char
+
+        ar = joint_state.agent_rows[agent_id]
+        ac = joint_state.agent_cols[agent_id]
+        return (ar, ac) == task.goal_pos
+
+    def _pop_next_task_for_agent(self, agent_id: int) -> Task | None:
+        """
+        Pull the next task for an agent, preferring the agent's color-group
+        box tasks first and the agent's positional task last.
+        """
+        agent_color = State.agent_colors[agent_id]
+        color_bucket = self.color_tasks.get(agent_color)
+        if color_bucket is not None and color_bucket["future"]:
+            task = color_bucket["future"].popleft()
+            color_bucket["current"].append(task)
+            return task
+
+        agent_queue = self.agent_tasks[agent_id]["future"]
+        if agent_queue:
+            return agent_queue.popleft()
+
+        return None
+
+    def _maybe_advance_completed_task(self, joint_state: State, agent_id: int) -> bool:
+        """
+        If the agent's current task is solved, move it to solved and assign a new task.
+        Returns True when a new task was assigned and replanned.
+        """
+        current_tasks = self.agent_tasks[agent_id]["current"]
+        if not current_tasks:
+            return False
+
+        current_task = current_tasks[0]
+        if not self._task_is_solved(joint_state, agent_id, current_task):
+            return False
+
+        finished_task = current_tasks.popleft()
+        self.agent_tasks[agent_id]["solved"].append(finished_task)
+
+        if finished_task.task_type == "move_box" and finished_task.box_char is not None:
+            finished_color = State.box_colors[ord(finished_task.box_char) - ord("A")]
+            color_bucket = self.color_tasks.get(finished_color)
+            if color_bucket is not None and color_bucket["current"]:
+                for idx, task in enumerate(color_bucket["current"]):
+                    if (
+                        task.task_type == finished_task.task_type
+                        and task.box_char == finished_task.box_char
+                        and task.goal_pos == finished_task.goal_pos
+                    ):
+                        color_bucket["current"].remove(task)
+                        break
+
+        print(
+            f"  Agent {agent_id}: current task solved, moved to solved list.",
+            file=sys.stderr,
+            flush=True,
+        )
+
+        next_task = self._pop_next_task_for_agent(agent_id)
+        if next_task is None:
+            self.agents[agent_id]._plan = []
+            self.agents[agent_id]._plan_index = 0
+            self.agents[agent_id].tasks = []
+            self.agents[agent_id].agent_goal = None
+            print(
+                f"  Agent {agent_id}: no more tasks available.",
+                file=sys.stderr,
+                flush=True,
+            )
+            return False
+
+        current_tasks.append(next_task)
+        self._sync_agent_task_state(agent_id, next_task)
+
+        print(
+            f"  Agent {agent_id}: assigned new task {next_task.task_type}, replanning.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return self.agents[agent_id].replan(joint_state, self.timestep)
 
     def _hca_preplan(self, initial_state: State) -> None:
         """
@@ -608,10 +724,17 @@ class Manager:
         """
         self._sync_agent_positions(joint_state)
 
+        # BDI-style task completion handling: move solved tasks aside, then
+        # assign and replan if another task is available.
+        for agent in self.agents:
+            self._maybe_advance_completed_task(joint_state, agent.agent_id)
+
         joint_action = []
         for agent in self.agents:
             action = agent.next_action()
             joint_action.append(action)
+
+        self.timestep += 1
         return joint_action
 
     def _sync_agent_positions(self, joint_state: State) -> None:
