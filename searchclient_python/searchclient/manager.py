@@ -549,6 +549,8 @@ class Manager:
                 )
                 return False
 
+        return False
+
     def _convert_task_to_goal_tuple(
         self, task: Task
     ) -> tuple[int | None, int | None, int, int, str | None]:
@@ -576,8 +578,11 @@ class Manager:
         failed_task: Task,
     ) -> tuple[int, int, str, bool] | None:
         """
-        Return the first blocking box with the same color as failed_task.
-        Also check if agent can actually reach the target box by running A* with only same-colored boxes.
+        First try to solve the task normally, which allows the planner to
+        reroute around same-colored boxes if a route exists.
+
+        Only if that fails do we inspect the shortest path and return the first
+        same-colored box that is actually blocking access.
 
         Returns (obs_r, obs_c, obs_char, can_reach_box) where:
         - can_reach_box is True if agent can reach the box (A* finds a path avoiding same-colored boxes)
@@ -586,6 +591,28 @@ class Manager:
         from searchclient.planner.astar import solve
 
         if failed_task.box_char is None:
+            return None
+
+        target_color = State.box_colors[ord(failed_task.box_char) - ord("A")]
+        if target_color is None:
+            return None
+
+        # Try to solve the task directly first. If the planner can find a route,
+        # then same-colored boxes are not blocking and we should not trigger a swap.
+        direct_plan = solve(
+            state=initial_state,
+            agent_id=agent_id,
+            goal=(
+                failed_task.object_pos[0],
+                failed_task.object_pos[1],
+                failed_task.goal_pos[0],
+                failed_task.goal_pos[1],
+                failed_task.box_char,
+            ),
+            constraints=set(),
+            dist_map=self.dist_map,
+        )
+        if direct_plan is not None:
             return None
 
         agent = self.agents[agent_id]
@@ -603,43 +630,13 @@ class Manager:
             return None
 
         obs_r, obs_c, obs_char = obstacle
-        target_color = State.box_colors[ord(failed_task.box_char) - ord("A")]
         obstacle_color = State.box_colors[ord(obs_char) - ord("A")]
-        if target_color is None or obstacle_color != target_color:
+        if obstacle_color != target_color:
             return None
 
-        # Check if agent can reach the target box by running A* with only same-colored boxes.
-        # Create a modified state with all non-target boxes removed.
-        modified_boxes = [row[:] for row in initial_state.boxes]  # Deep copy 2D list
-
-        for r in range(len(modified_boxes)):
-            for c in range(len(modified_boxes[r])):
-                box_char = modified_boxes[r][c]
-                if box_char == "":  # empty slot
-                    continue
-                box_color = State.box_colors[ord(box_char) - ord("A")]
-                if box_color != target_color:
-                    modified_boxes[r][c] = ""  # Remove non-target boxes
-
-        modified_state = State(
-            agent_rows=initial_state.agent_rows[:],
-            agent_cols=initial_state.agent_cols[:],
-            boxes=modified_boxes,
-        )
-
-        # Run A* from agent to target box position (navigation only, no pushing)
-        goal = (None, None, failed_task.object_pos[0], failed_task.object_pos[1])
-        plan = solve(
-            state=modified_state,
-            agent_id=agent_id,
-            goal=goal,
-            constraints=set(),
-            dist_map=self.dist_map,
-        )
-
-        can_reach_box = plan is not None
-
-        return (obs_r, obs_c, obs_char, can_reach_box)
+        # Planner could not find a route; identify the first same-colored box
+        # on a shortest path from the agent to the target box.
+        return (obs_r, obs_c, obs_char, False)
 
     def _swap_task_with_obstacle(
         self,
