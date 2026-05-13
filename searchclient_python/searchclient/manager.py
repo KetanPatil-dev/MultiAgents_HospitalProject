@@ -211,6 +211,34 @@ class Manager:
             agent.tasks = []
             agent.agent_goal = task.goal_pos
 
+    def _build_runtime_constraints(
+        self, agent_id: int, timestep: int, horizon: int = 5
+    ) -> set[tuple[int, int, int]]:
+        """
+        Build temporary space-time constraints for replanning.
+
+        Agents currently waiting on another agent are treated as stationary
+        obstacles for a short horizon so other agents do not immediately plan
+        through their cells.
+        """
+        runtime_constraints = set(self.agents[agent_id].constraints)
+
+        for other_agent_id, waiting_for in self.agents_awaiting_other_agent.items():
+            if other_agent_id == agent_id or waiting_for is None:
+                continue
+
+            other_agent = self.agents[other_agent_id]
+            for dt in range(horizon):
+                runtime_constraints.add(
+                    (
+                        other_agent.agent_row,
+                        other_agent.agent_col,
+                        timestep + dt,
+                    )
+                )
+
+        return runtime_constraints
+
     def _task_is_solved(self, joint_state: State, agent_id: int, task: Task) -> bool:
         """Return True if the task has already been completed in the joint state."""
         if task.task_type == "move_box":
@@ -461,25 +489,45 @@ class Manager:
                         file=sys.stderr,
                         flush=True,
                     )
-            # elif (
-            #     obstacles is not None
-            #     and len(obstacles) > 0
-            #     and obstacles[0][4] == "agent"
-            # ):
-            #     print(
-            #         f"  Agent {agent_id}: agent obstacle detected at ({obstacles[0][0]}, {obstacles[0][1]}). Will attempt to re-plan with original task and hope to find a way around the agent obstacle.",
-            #         file=sys.stderr,
-            #         flush=True,
-            #     )
+                # elif (
+                #     obstacles is not None
+                #     and len(obstacles) > 0
+                #     and obstacles[0][4] == "agent"
+                # ):
+                #     print(
+                #         f"  Agent {agent_id}: agent obstacle detected at ({obstacles[0][0]}, {obstacles[0][1]}). Will attempt to re-plan with original task and hope to find a way around the agent obstacle.",
+                #         file=sys.stderr,
+                #         flush=True,
+                #     )
+                # obstacle_agent_id = next(
+                #     agent.agent_id
+                #     for agent in self.agents
+                #     if agent.agent_id != agent_id
+                #     and State.agent_colors[agent.agent_id] == obstacles[0][2]
+                #     and agent.agent_row == obstacles[0][0]
+                #     and agent.agent_col == obstacles[0][1]
+                # )
+                # self.agents_awaiting_other_agent[agent_id] = obstacle_agent_id
 
-            # other edge cases here i guess
+                """
+                1. get that agent to make some move in any way possible 
+                
+                """
+
+            # NOTE: other edge cases here i guess
 
             goal_tuple = self._convert_task_to_goal_tuple(current_task)
+
+            # NOTE: timestep is set to 0 because solve function is unaware of the concept of time
+            # this is a bug and should be fixed
+            runtime_constraints = self._build_runtime_constraints(
+                agent_id, 0, horizon=10
+            )
             plan = solve(
                 state=joint_state,
                 agent_id=agent.agent_id,
                 goal=goal_tuple,
-                constraints=set(),
+                constraints=runtime_constraints,
                 dist_map=self.dist_map,
             )
 
@@ -1079,8 +1127,19 @@ class Manager:
             joint_action.append(action)
 
         # Validate joint action
-        is_valid = not joint_state.is_conflicting(joint_action)
+        is_valid = self.is_joint_action_valid(joint_state, joint_action)
         print(f"Joint action valid: {is_valid}", file=sys.stderr, flush=True)
+
+        if not is_valid:
+            """
+            1. set joint action to all noops
+            2. clear all agent plans (to force replanning in next turn, which may resolve conflicts)
+                - maybe only clear plans of agents involved in the invalid action? but that requires more complex logic to determine which agents are involved in the invalidity
+            """
+            joint_action = [Action.NoOp for _ in self.agents]
+            for agent in self.agents:
+                agent._plan = []
+                agent._plan_index = 0
 
         self.timestep += 1
         return joint_action
@@ -1099,3 +1158,113 @@ class Manager:
 
     def is_done(self, joint_state: State) -> bool:
         return joint_state.is_goal_state()
+
+    # ------------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------------
+
+    def is_joint_action_valid(
+        self, joint_state: State, joint_action: list[Action]
+    ) -> bool:
+        """
+        Validate a joint action comprehensively.
+
+        Checks:
+        1. Each action is applicable for its agent
+        2. No conflicts between agents (collisions, swaps, etc.)
+        3. All agents have valid positions
+
+        Returns True if valid, False otherwise.
+        """
+        # Check: correct number of actions
+        if len(joint_action) != len(self.agents):
+            return False
+
+        # Check: each action is applicable for the agent
+        for agent_id, action in enumerate(joint_action):
+            if not joint_state.is_applicable(agent_id, action):
+                return False
+
+        # Check: no conflicts between agents
+        # Manually validate conflicts more carefully
+        num_agents = len(self.agents)
+        dest: set[tuple[int, int]] = set()  # agent destinations
+        box_dest: set[tuple[int, int]] = set()  # box destinations
+        agent_destinations: list[tuple[int, int] | None] = [None] * num_agents
+
+        # First pass: mark positions of agents doing NoOp (staying in place)
+        for agent_id, action in enumerate(joint_action):
+            ar, ac = joint_state.agent_rows[agent_id], joint_state.agent_cols[agent_id]
+            if action.type is ActionType.NoOp:
+                dest.add((ar, ac))  # Mark current position as occupied
+                agent_destinations[agent_id] = (ar, ac)
+
+        # Second pass: check movement actions against occupied cells
+        for agent_id, action in enumerate(joint_action):
+            ar, ac = joint_state.agent_rows[agent_id], joint_state.agent_cols[agent_id]
+
+            if action.type is ActionType.NoOp:
+                continue
+
+            if action.type is ActionType.Move:
+                nr, nc = ar + action.agent_row_delta, ac + action.agent_col_delta
+                # Check if destination is already taken by another agent
+                if (nr, nc) in dest:
+                    return False
+                # Check if destination will have a box pushed there
+                if (nr, nc) in box_dest:
+                    return False
+                dest.add((nr, nc))
+                agent_destinations[agent_id] = (nr, nc)
+
+            elif action.type is ActionType.Push:
+                br, bc = ar + action.agent_row_delta, ac + action.agent_col_delta
+                bdr, bdc = br + action.box_row_delta, bc + action.box_col_delta
+                # Check if box destination is already taken by another box
+                if (bdr, bdc) in box_dest:
+                    return False
+                # Check if box destination will have an agent
+                if (bdr, bdc) in dest:
+                    return False
+                # Check if agent's entry to box cell conflicts with another agent
+                if (br, bc) in dest:
+                    return False
+                box_dest.add((bdr, bdc))
+                dest.add((br, bc))
+                agent_destinations[agent_id] = (br, bc)
+
+            elif action.type is ActionType.Pull:
+                nr, nc = ar + action.agent_row_delta, ac + action.agent_col_delta
+                # Check if new agent position conflicts
+                if (nr, nc) in dest:
+                    return False
+                # Check if new agent position will have a box destination
+                if (nr, nc) in box_dest:
+                    return False
+                # Check if agent's old position (where box is pulled) conflicts
+                if (ar, ac) in dest:
+                    return False
+                dest.add((nr, nc))
+                box_dest.add((ar, ac))
+                agent_destinations[agent_id] = (nr, nc)
+
+        # Check: detect position swaps (two agents exchanging positions is forbidden)
+        for i in range(num_agents):
+            if agent_destinations[i] is None:
+                continue
+            di = agent_destinations[i]
+            for j in range(i + 1, num_agents):
+                if agent_destinations[j] is None:
+                    continue
+                dj = agent_destinations[j]
+                # Swap detected: agent i goes where j was AND j goes where i was
+                if di == (
+                    joint_state.agent_rows[j],
+                    joint_state.agent_cols[j],
+                ) and dj == (
+                    joint_state.agent_rows[i],
+                    joint_state.agent_cols[i],
+                ):
+                    return False
+
+        return True
