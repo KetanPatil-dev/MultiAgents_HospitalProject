@@ -838,12 +838,6 @@ class Manager:
 
         # if obstacle_index is None and obstacle_assigned_to_agent_id is None:
         if obstacle_assigned_to_agent_id is None:
-            if obstacle_index is not None:
-                print(
-                    f"  Found future task for obstacle box {obs_color} at ({obs_r}, {obs_c}) in color future tasks at index {obstacle_index}.",
-                    file=sys.stderr,
-                    flush=True,
-                )
             if current_task is None:
                 # 1. add the task of clearing the obstacle box as current task
                 # 2. check if agent was finihsed, if so then pop back that task to future list of color agents
@@ -856,6 +850,19 @@ class Manager:
                     ),
                     box_char=State.get_box_char_from_color(obs_color),
                 )
+
+                if obstacle_index is not None:
+                    print(
+                        f"  Found future task for obstacle box {obs_color} at ({obs_r}, {obs_c}) in color future tasks at index {obstacle_index}.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    print(
+                        f"Updating that future goal to the goal_pos after the swapping: {new_task.goal_pos}"
+                    )
+                    self.color_tasks[target_color]["future_box_tasks"][
+                        obstacle_index
+                    ].object_pos = new_task.goal_pos
 
                 agent_color = State.agent_colors[agent_id]
                 for idx, task in enumerate(
@@ -895,6 +902,19 @@ class Manager:
                     ),
                     box_char=State.get_box_char_from_color(obs_color),
                 )
+
+                if obstacle_index is not None:
+                    print(
+                        f"  Found future task for obstacle box {obs_color} at ({obs_r}, {obs_c}) in color future tasks at index {obstacle_index}.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    print(
+                        f"Updating that future goal to the goal_pos after the swapping: {new_task.goal_pos}"
+                    )
+                    self.color_tasks[target_color]["future_box_tasks"][
+                        obstacle_index
+                    ].object_pos = new_task.goal_pos
 
                 # # remove failed_task from current tasks and add to front of future tasks
 
