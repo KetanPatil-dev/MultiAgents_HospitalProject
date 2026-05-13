@@ -92,6 +92,24 @@
 			"preLaunchTask": "Launch MAPF Server SingularWardRushv4"
 		},
 		{
+			"name": "MAS SingularWardRushv5",
+			"type": "debugpy",
+			"request": "attach",
+			"internalConsoleOptions": "openOnFirstSessionStart",
+			"connect": {
+				"host": "localhost",
+				"port": 1234
+			},
+			"pathMappings": [
+				{
+					"localRoot": "${workspaceFolder}",
+					"remoteRoot": "."
+				}
+			],
+			"justMyCode": true,
+			"preLaunchTask": "Launch MAPF Server SingularWardRushv5"
+		},
+		{
 			"name": "MAS EasyWardRush",
 			"type": "debugpy",
 			"request": "attach",
@@ -107,7 +125,7 @@
 				}
 			],
 			"justMyCode": true,
-			"preLaunchTask": "Launch MAPF Server ZeroWardRush"
+			"preLaunchTask": "Launch MAPF Server EasyWardRush"
 		},
 		{
 			"name": "Client",

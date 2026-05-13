@@ -106,6 +106,8 @@ class Manager:
         """
         assert self.profile is not None
 
+        assigned_boxes: set[tuple[int, int]] = set()
+
         for goal_r, goal_c, goal_char in self.profile.box_goals:
             task = Task(
                 task_type="move_box",
@@ -121,8 +123,9 @@ class Manager:
             # Find the actual box and update object_pos
             # NOTE: this order here might be IMPORTANT !!!
             for br, bc, box_char in self.profile.real_boxes:
-                if box_char == goal_char:
+                if box_char == goal_char and (br, bc) not in assigned_boxes:
                     task.object_pos = (br, bc)
+                    assigned_boxes.add((br, bc))
                     break
 
             # Get color of the box
@@ -145,6 +148,12 @@ class Manager:
                 file=sys.stderr,
                 flush=True,
             )
+
+        print(
+            f" Total box tasks created: {len(assigned_boxes)}",
+            file=sys.stderr,
+            flush=True,
+        )
 
     def _build_agent_goal_tasks(self, initial_state: State) -> None:
         """
@@ -328,9 +337,9 @@ class Manager:
                 and obstacles[0][2] == State.agent_colors[agent_id]
                 and obstacles[0][4] == "box"
             ):
+                # NOTE: same colored box obstacle case
                 managed_to_swap = self._swap_task_with_obstacle(
                     agent.agent_id,
-                    current_task,
                     obstacles[0],
                 )
                 if managed_to_swap and agent.task is not None:
@@ -341,6 +350,73 @@ class Manager:
                         file=sys.stderr,
                         flush=True,
                     )
+            elif (
+                obstacles is not None
+                and len(obstacles) > 0
+                and obstacles[0][2] != State.agent_colors[agent_id]
+                and obstacles[0][4] == "box"
+            ):
+                print(
+                    f"  Agent {agent_id}: different colored box obstacle detected at ({obstacles[0][0]}, {obstacles[0][1]}).",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+                closest_foreign_color_agent = None
+                closest_distance = float("inf")
+                for other_agent in self.agents:
+                    if other_agent.agent_id == agent_id:
+                        continue
+                    if State.agent_colors[other_agent.agent_id] == obstacles[0][2]:
+                        if self.dist_map is None:
+                            print(
+                                f"  Agent {agent_id}: distance map not initialized, cannot evaluate obstacle proximity.",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                            break
+                        bfs_table = self.dist_map._bfs(
+                            other_agent.agent_row,
+                            other_agent.agent_col,
+                            # obstacles[0][0],
+                            # obstacles[0][1],
+                        )
+                        dist = bfs_table[obstacles[0][0]][obstacles[0][1]]
+                        if dist is not None and dist < closest_distance:
+                            closest_distance = dist
+                            closest_foreign_color_agent = other_agent
+
+                if closest_foreign_color_agent is None:
+                    print(
+                        f"  Agent {agent_id}: no agents of color {obstacles[0][2]} found to evaluate obstacle proximity.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    return False
+
+                print(
+                    f"  Agent {agent_id}: closest agent of color {obstacles[0][2]} is Agent {closest_foreign_color_agent.agent_id} at distance {closest_distance}.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+                managed_foreign_to_swap = self._swap_task_with_obstacle(
+                    closest_foreign_color_agent.agent_id,
+                    obstacles[0],
+                )
+
+                if (
+                    managed_foreign_to_swap
+                    and closest_foreign_color_agent.task is not None
+                ):
+                    print(
+                        f"  Agent {agent_id}: successfully swapped obstacle task with Agent {closest_foreign_color_agent.agent_id}. Attempting to replan with original task.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+
+                    closest_foreign_color_agent._plan = []
+                    closest_foreign_color_agent._plan_index = 0
 
             # other edge cases here i guess
 
@@ -671,7 +747,6 @@ class Manager:
     def _swap_task_with_obstacle(
         self,
         agent_id: int,
-        failed_task: Task,
         obstacle: tuple[int, int, Color, bool, str],
     ) -> bool:
         """
@@ -713,10 +788,10 @@ class Manager:
             return False
 
         # assert failed_task.box_char is not None
-        if failed_task.box_char is None:
+        if current_task is None or current_task.box_char is None:
             target_color = State.agent_colors[agent_id]
         else:
-            target_color = State.box_colors[ord(failed_task.box_char) - ord("A")]
+            target_color = State.box_colors[ord(current_task.box_char) - ord("A")]
         assert target_color is not None
 
         # First try to find that obstacle task in the color future list.
@@ -761,43 +836,114 @@ class Manager:
                 )
                 break
 
-        if obstacle_index is None and obstacle_assigned_to_agent_id is None:
-
-            new_task = Task(
-                task_type="move_box",
-                object_pos=(
-                    (failed_task.object_pos) if obstacle_after_box else (obs_r, obs_c)
-                ),
-                goal_pos=(
-                    self.agents[agent_id].agent_row,
-                    self.agents[agent_id].agent_col,
-                ),
-                box_char=State.get_box_char_from_color(obs_color),
-            )
-
-            # # remove failed_task from current tasks and add to front of future tasks
-            failed_task = current_task
-            if obstacle_after_box is True:
-                failed_task.object_pos = (obs_r, obs_c)
-
-            if failed_task.task_type == "move_box" and failed_task.box_char is not None:
-                self.color_tasks[target_color]["future_box_tasks"].appendleft(
-                    failed_task
-                )
-            elif (
-                failed_task.task_type == "move_agent"
-                and failed_task.goal_pos is not None
-            ):
-                self.color_tasks[target_color]["future_agent_tasks"].appendleft(
-                    failed_task
-                )
-            else:
+        # if obstacle_index is None and obstacle_assigned_to_agent_id is None:
+        if obstacle_assigned_to_agent_id is None:
+            if obstacle_index is not None:
                 print(
-                    f"  Swap failed: failed task is not properly formed for re-queuing.",
+                    f"  Found future task for obstacle box {obs_color} at ({obs_r}, {obs_c}) in color future tasks at index {obstacle_index}.",
                     file=sys.stderr,
                     flush=True,
                 )
-                return False
+            if current_task is None:
+                # 1. add the task of clearing the obstacle box as current task
+                # 2. check if agent was finihsed, if so then pop back that task to future list of color agents
+                new_task = Task(
+                    task_type="move_box",
+                    object_pos=(obs_r, obs_c),
+                    goal_pos=(
+                        self.agents[agent_id].agent_row,
+                        self.agents[agent_id].agent_col,
+                    ),
+                    box_char=State.get_box_char_from_color(obs_color),
+                )
+
+                agent_color = State.agent_colors[agent_id]
+                for idx, task in enumerate(
+                    self.color_tasks[agent_color]["solved_tasks"]
+                ):
+                    if (
+                        task.task_type == "move_agent"
+                        and task.goal_pos
+                        == (
+                            self.agents[agent_id].agent_row,
+                            self.agents[agent_id].agent_col,
+                        )
+                        and task.crucial is True
+                    ):
+                        # move this solved agent task back to future since agent is not actually at its goal yet
+                        self.color_tasks[agent_color]["future_agent_tasks"].appendleft(
+                            task
+                        )
+                        del self.color_tasks[agent_color]["solved_tasks"][idx]
+                        print(
+                            f"  Agent {agent_id} was previously marked as having solved its agent goal, but it is now blocked by an obstacle. Moving its agent goal task back to future tasks.",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        break
+            else:
+                new_task = Task(
+                    task_type="move_box",
+                    object_pos=(
+                        (current_task.object_pos)
+                        if obstacle_after_box
+                        else (obs_r, obs_c)
+                    ),
+                    goal_pos=(
+                        self.agents[agent_id].agent_row,
+                        self.agents[agent_id].agent_col,
+                    ),
+                    box_char=State.get_box_char_from_color(obs_color),
+                )
+
+                # # remove failed_task from current tasks and add to front of future tasks
+
+                if obstacle_after_box is True:
+                    current_task.object_pos = (obs_r, obs_c)
+
+                if (
+                    current_task.task_type == "move_box"
+                    and current_task.box_char is not None
+                ):
+                    self.color_tasks[target_color]["future_box_tasks"].appendleft(
+                        current_task
+                    )
+                elif (
+                    current_task.task_type == "move_agent"
+                    and current_task.goal_pos is not None
+                ):
+                    self.color_tasks[target_color]["future_agent_tasks"].appendleft(
+                        current_task
+                    )
+                else:
+                    print(
+                        f"  Swap failed: failed task is not properly formed for re-queuing.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    return False
+
+                # 1. check if the obstacle box of was already in place, if so, then append on the right to future box tasks
+                # it needs to be put back as it is
+                for idx, task in enumerate(
+                    self.color_tasks[target_color]["solved_tasks"]
+                ):
+                    if (
+                        task.task_type == "move_box"
+                        and task.box_char is not None
+                        and obs_color == State.box_colors[ord(task.box_char) - ord("A")]
+                        and task.goal_pos == (obs_r, obs_c)
+                        and task.crucial is True
+                    ):
+                        # move this solved box task back to future since box is not actually at its goal yet
+                        self.color_tasks[target_color]["future_box_tasks"].append(task)
+                        del self.color_tasks[target_color]["solved_tasks"][idx]
+                        print(
+                            f"  Obstacle box {obs_color} was previously marked as having solved its box goal, but it is now blocking an agent. Moving its box goal task back to future tasks.",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        break
 
             self.agents[agent_id].task = new_task
             self._sync_agent_task_state(agent_id, new_task)
