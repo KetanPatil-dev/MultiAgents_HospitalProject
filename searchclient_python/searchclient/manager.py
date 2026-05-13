@@ -42,6 +42,7 @@ class Manager:
 
         # Task lists by agent color: {Color: {'future': [...], 'current': [...]}}
         self.color_tasks: dict[Color | None, ColorTasksTypedDict] = {}
+        self.agents_awaiting_other_agent: dict[int, int | None] = {}
 
     # ------------------------------------------------------------------
     # Setup (once after parsing)
@@ -64,6 +65,9 @@ class Manager:
         self.agents = [
             Agent(i, self.dist_map, profile) for i in range(profile.num_agents)
         ]
+        self.agents_awaiting_other_agent: dict[int, int | None] = {
+            agent.agent_id: None for agent in self.agents
+        }
         self._sync_agent_positions(initial_state)
 
         # Initialize task lists for each agent color
@@ -232,9 +236,20 @@ class Manager:
                 task = color_bucket["future_box_tasks"].popleft()
                 return task
             elif color_bucket["future_agent_tasks"]:
-                # check if this agent has already reached its final goal, if so then dont assign it the next one
-                if self.agents[agent_id].has_reached_its_goal:
-                    return None
+                for idx, task in enumerate(
+                    self.color_tasks[agent_color]["solved_tasks"]
+                ):
+                    if task.task_type == "move_agent" and task.goal_pos == (
+                        self.agents[agent_id].agent_row,
+                        self.agents[agent_id].agent_col,
+                    ):
+                        # this agent has already reached its goal, move on to next task without assigning this one
+                        print(
+                            f"  Agent {agent_id} has already reached its agent goal at {task.goal_pos}, skipping assignment of next agent goal task.",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        return None
 
                 task = color_bucket["future_agent_tasks"].popleft()
                 task.object_pos = (
@@ -269,9 +284,6 @@ class Manager:
         self.agents[agent_id].task = None
         self.agents[agent_id]._plan = []
         self.agents[agent_id]._plan_index = 0
-
-        if current_task.task_type == "move_agent" and current_task.crucial is True:
-            self.agents[agent_id].has_reached_its_goal = True
 
         print(
             f"  Agent {agent_id}: current task solved, moved to solved list.",
@@ -322,22 +334,39 @@ class Manager:
 
         agent = self.agents[agent_id]
         current_task = agent.task
+
+        if self.agents_awaiting_other_agent[agent_id] is not None:
+            print(
+                f"  Agent {agent_id}: currently awaiting task from Agent {self.agents_awaiting_other_agent[agent_id]}, skipping preplan until that task is received.",
+                file=sys.stderr,
+                flush=True,
+            )
+            return False
+
         if current_task is None:
             return False
 
         if len(agent._plan) == 0:
             obstacles = self._find_obstacles(joint_state, agent_id, current_task)
+            if obstacles is None:
+                box_obstacles = None
+            else:
+                box_obstacles = [
+                    (r, c, color, after_box, obj_type)
+                    for r, c, color, after_box, obj_type in obstacles
+                    if obj_type != "agent"
+                ]
 
             if (
-                obstacles is not None
-                and len(obstacles) > 0
-                and obstacles[0][2] == State.agent_colors[agent_id]
-                and obstacles[0][4] == "box"
+                box_obstacles is not None
+                and len(box_obstacles) > 0
+                and box_obstacles[0][2] == State.agent_colors[agent_id]
+                and box_obstacles[0][4] == "box"
             ):
                 # NOTE: same colored box obstacle case
                 managed_to_swap = self._swap_task_with_obstacle(
                     agent.agent_id,
-                    obstacles[0],
+                    box_obstacles[0],
                 )
                 if managed_to_swap and agent.task is not None:
                     current_task = agent.task
@@ -348,72 +377,96 @@ class Manager:
                         flush=True,
                     )
             elif (
-                obstacles is not None
-                and len(obstacles) > 0
-                and obstacles[0][2] != State.agent_colors[agent_id]
-                and obstacles[0][4] == "box"
+                box_obstacles is not None
+                and len(box_obstacles) > 0
+                and box_obstacles[0][2] != State.agent_colors[agent_id]
+                and box_obstacles[0][4] == "box"
             ):
                 print(
-                    f"  Agent {agent_id}: different colored box obstacle detected at ({obstacles[0][0]}, {obstacles[0][1]}).",
+                    f"  Agent {agent_id}: different colored box obstacle detected at ({box_obstacles[0][0]}, {box_obstacles[0][1]}).",
                     file=sys.stderr,
                     flush=True,
                 )
 
-                closest_foreign_color_agent = None
-                closest_distance = float("inf")
-                for other_agent in self.agents:
-                    if other_agent.agent_id == agent_id:
-                        continue
-                    if State.agent_colors[other_agent.agent_id] == obstacles[0][2]:
-                        if self.dist_map is None:
-                            print(
-                                f"  Agent {agent_id}: distance map not initialized, cannot evaluate obstacle proximity.",
-                                file=sys.stderr,
-                                flush=True,
-                            )
-                            break
-                        bfs_table = self.dist_map._bfs(
-                            other_agent.agent_row,
-                            other_agent.agent_col,
-                            # obstacles[0][0],
-                            # obstacles[0][1],
+                # closest_foreign_color_agent = None
+                # closest_distance = float("inf")
+                # for other_agent in self.agents:
+                #     if other_agent.agent_id == agent_id:
+                #         continue
+                #     if State.agent_colors[other_agent.agent_id] == box_obstacles[0][2]:
+                #         if self.dist_map is None:
+                #             print(
+                #                 f"  Agent {agent_id}: distance map not initialized, cannot evaluate obstacle proximity.",
+                #                 file=sys.stderr,
+                #                 flush=True,
+                #             )
+                #             break
+                #         bfs_table = self.dist_map._bfs(
+                #             other_agent.agent_row,
+                #             other_agent.agent_col,
+                #             # box_obstacles[0][0],
+                #             # box_obstacles[0][1],
+                #         )
+                #         dist = bfs_table[box_obstacles[0][0]][box_obstacles[0][1]]
+                #         if dist is not None and dist < closest_distance:
+                #             closest_distance = dist
+                #             closest_foreign_color_agent = other_agent
+
+                # if closest_foreign_color_agent is None:
+                #     print(
+                #         f"  Agent {agent_id}: no agents of color {box_obstacles[0][2]} found to evaluate obstacle proximity.",
+                #         file=sys.stderr,
+                #         flush=True,
+                #     )
+                #     return False
+
+                # print(
+                #     f"  Agent {agent_id}: closest agent of color {box_obstacles[0][2]} is Agent {closest_foreign_color_agent.agent_id} at distance {closest_distance}.",
+                #     file=sys.stderr,
+                #     flush=True,
+                # )
+                foreign_agent = next(
+                    agent
+                    for agent in self.agents
+                    if agent.agent_id != agent_id
+                    and State.agent_colors[agent.agent_id] == box_obstacles[0][2]
+                )
+
+                if self.agents_awaiting_other_agent[agent_id] is None:
+
+                    managed_foreign_to_swap = self._swap_foreign_task_with_obstacle(
+                        foreign_agent.agent_id,
+                        box_obstacles[0],
+                    )
+
+                    if managed_foreign_to_swap and foreign_agent.task is not None:
+                        print(
+                            f"  Agent {agent_id}: successfully swapped obstacle task with Agent {foreign_agent.agent_id}. Attempting to replan with original task.",
+                            file=sys.stderr,
+                            flush=True,
                         )
-                        dist = bfs_table[obstacles[0][0]][obstacles[0][1]]
-                        if dist is not None and dist < closest_distance:
-                            closest_distance = dist
-                            closest_foreign_color_agent = other_agent
 
-                if closest_foreign_color_agent is None:
+                        foreign_agent._plan = []
+                        foreign_agent._plan_index = 0
+                        self.agents_awaiting_other_agent[agent_id] = (
+                            foreign_agent.agent_id
+                        )
+                else:
                     print(
-                        f"  Agent {agent_id}: no agents of color {obstacles[0][2]} found to evaluate obstacle proximity.",
+                        f"  Agent {agent_id}: already awaiting task from Agent {self.agents_awaiting_other_agent[agent_id]}.",
                         file=sys.stderr,
                         flush=True,
                     )
-                    return False
-
-                print(
-                    f"  Agent {agent_id}: closest agent of color {obstacles[0][2]} is Agent {closest_foreign_color_agent.agent_id} at distance {closest_distance}.",
-                    file=sys.stderr,
-                    flush=True,
-                )
-
-                managed_foreign_to_swap = self._swap_task_with_obstacle(
-                    closest_foreign_color_agent.agent_id,
-                    obstacles[0],
-                )
-
-                if (
-                    managed_foreign_to_swap
-                    and closest_foreign_color_agent.task is not None
-                ):
-                    print(
-                        f"  Agent {agent_id}: successfully swapped obstacle task with Agent {closest_foreign_color_agent.agent_id}. Attempting to replan with original task.",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-
-                    closest_foreign_color_agent._plan = []
-                    closest_foreign_color_agent._plan_index = 0
+            # elif (
+            #     obstacles is not None
+            #     and len(obstacles) > 0
+            #     and obstacles[0][4] == "agent"
+            # ):
+            #     print(
+            #         f"  Agent {agent_id}: agent obstacle detected at ({obstacles[0][0]}, {obstacles[0][1]}). Will attempt to re-plan with original task and hope to find a way around the agent obstacle.",
+            #         file=sys.stderr,
+            #         flush=True,
+            #     )
 
             # other edge cases here i guess
 
@@ -429,6 +482,7 @@ class Manager:
             if plan:
                 agent._plan = plan
                 agent._plan_index = 0
+                self.agents_awaiting_other_agent[agent_id] = None
                 print(
                     f"  Agent {agent_id}: preplan found (length {len(plan)})",
                     file=sys.stderr,
@@ -558,7 +612,7 @@ class Manager:
                     add_obstacle(
                         r,
                         c,
-                        str(State.agent_colors[other_id]),
+                        State.agent_colors[other_id],  # type: ignore
                         obstacle_after_box,
                         "agent",
                     )
@@ -656,6 +710,115 @@ class Manager:
                 sim_agent_r, sim_agent_c = next_r, next_c
 
         return obstacles
+
+    def _swap_foreign_task_with_obstacle(
+        self,
+        foreign_agent_id: int,
+        obstacle: tuple[int, int, Color, bool, str],
+    ) -> bool:
+        """
+        Swap the task of a foreign agent with an obstacle task if possible.
+
+        Args:
+            foreign_agent_id: ID of the agent to attempt the swap on
+            obstacle: (obs_r, obs_c, obs_color, obstacle_after_box, obstacle_type) position and color of the blocking box
+
+
+        """
+        obs_r, obs_c, obs_color, obstacle_after_box, obstacle_type = obstacle
+
+        current_task = self.agents[foreign_agent_id].task
+
+        new_task = Task(
+            task_type="move_box",
+            object_pos=(obs_r, obs_c),
+            goal_pos=(
+                self.agents[foreign_agent_id].agent_row,
+                self.agents[foreign_agent_id].agent_col,
+            ),
+            box_char=State.get_box_char_from_color(obs_color),
+        )
+
+        # if (
+        #     current_task is not None
+        #     and current_task.task_type == "move_box"
+        #     and current_task.box_char is not None
+        #     and current_task.object_pos == (obs_r, obs_c)
+        #     and current_task.goal_pos
+        #     == (
+        #         self.agents[foreign_agent_id].agent_row,
+        #         self.agents[foreign_agent_id].agent_col,
+        #     )
+        #     and State.box_colors[ord(current_task.box_char) - ord("A")] == obs_color
+        # ):
+        #     print(
+        #         f"  Foreign Agent {foreign_agent_id}: current task already matches the obstacle task. No swap needed.",
+        #         file=sys.stderr,
+        #         flush=True,
+        #     )
+        #     return False
+
+        for idx, task in enumerate(self.color_tasks[obs_color]["solved_tasks"]):
+            if (
+                task.task_type == "move_box"
+                and task.box_char is not None
+                and obs_color == State.box_colors[ord(task.box_char) - ord("A")]
+                and task.goal_pos == (obs_r, obs_c)
+                and task.crucial is True
+            ):
+                # move this solved box task back to future since box is now an obstacle that needs to be moved
+                task.object_pos = (obs_r, obs_c)
+                self.color_tasks[obs_color]["future_box_tasks"].append(task)
+                del self.color_tasks[obs_color]["solved_tasks"][idx]
+                print(
+                    f"  Foreign Agent {foreign_agent_id}: Obstacle box {obs_color} was previously marked as having solved its box goal, but it is now blocking another agent. Moving its box goal task back to future tasks.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                break
+        for idx, task in enumerate(self.color_tasks[obs_color]["future_box_tasks"]):
+            if (
+                task.task_type == "move_box"
+                and task.box_char is not None
+                and obs_color == State.box_colors[ord(task.box_char) - ord("A")]
+                and task.object_pos == (obs_r, obs_c)
+            ):
+                # update the future task for the obstacle box to reflect its new position as an obstacle
+                task.object_pos = (obs_r, obs_c)
+                print(
+                    f"  Foreign Agent {foreign_agent_id}: Found future task for obstacle box {obs_color} at ({obs_r}, {obs_c}) in color future tasks at index {idx}. Updating that future task's object position to reflect current obstacle position.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                break
+
+        if current_task is not None:
+            if (
+                current_task.task_type == "move_box"
+                and current_task.box_char is not None
+            ):
+                current_task.object_pos = (
+                    self.agents[foreign_agent_id].agent_row,
+                    self.agents[foreign_agent_id].agent_col,
+                )
+                if current_task.object_pos != current_task.goal_pos:
+                    self.color_tasks[obs_color]["future_box_tasks"].appendleft(
+                        current_task
+                    )
+            elif (
+                current_task.task_type == "move_agent"
+                and current_task.goal_pos is not None
+            ):
+                # current_task.goal_pos = (obs_r, obs_c)
+                # this doesnt matter i think here
+                self.color_tasks[obs_color]["future_agent_tasks"].appendleft(
+                    current_task
+                )
+
+        self.agents[foreign_agent_id].task = new_task
+        self._sync_agent_task_state(foreign_agent_id, new_task)
+
+        return True
 
     def _swap_task_with_obstacle(
         self,
@@ -888,6 +1051,7 @@ class Manager:
 
         # BDI-style task completion handling: move solved tasks aside, then
         # assign and replan if another task is available.
+        t = self.timestep
         for agent in self.agents:
 
             if agent.task is None:
@@ -896,7 +1060,15 @@ class Manager:
                     self._sync_agent_task_state(agent.agent_id, agent.task)
 
             self._maybe_advance_completed_task_or_preplan(joint_state, agent.agent_id)
-
+            # agent.sense(joint_state, t)
+            # if not agent.plan_is_sound(joint_state, t):
+            #     success = agent.replan(joint_state, t)
+            #     if not success:
+            #         print(
+            #             f"t={t} Agent {agent.agent_id}: replan failed.",
+            #             file=sys.stderr,
+            #             flush=True,
+            #         )
         joint_action = []
         for agent in self.agents:
             action = agent.next_action()
