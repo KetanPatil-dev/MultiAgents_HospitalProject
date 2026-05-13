@@ -1184,7 +1184,7 @@ class Manager:
                 continue
 
             self.agents_no_plan_cnt[agent.agent_id] += 1
-            if self.agents_no_plan_cnt[agent.agent_id] >= 10:
+            if self.agents_no_plan_cnt[agent.agent_id] >= 15:
                 random_move = self._get_random_valid_move(joint_state, agent.agent_id)
                 if random_move is not None:
                     joint_action[agent.agent_id] = random_move
