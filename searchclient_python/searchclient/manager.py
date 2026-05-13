@@ -9,6 +9,7 @@ Architecture:
 
 from __future__ import annotations
 
+import random
 from collections import deque
 import sys
 from typing import TYPE_CHECKING, TypedDict
@@ -43,6 +44,7 @@ class Manager:
         # Task lists by agent color: {Color: {'future': [...], 'current': [...]}}
         self.color_tasks: dict[Color | None, ColorTasksTypedDict] = {}
         self.agents_awaiting_other_agent: dict[int, int | None] = {}
+        self.agents_no_plan_cnt: dict[int, int] = {}
 
     # ------------------------------------------------------------------
     # Setup (once after parsing)
@@ -68,6 +70,7 @@ class Manager:
         self.agents_awaiting_other_agent: dict[int, int | None] = {
             agent.agent_id: None for agent in self.agents
         }
+        self.agents_no_plan_cnt = {agent.agent_id: 0 for agent in self.agents}
         self._sync_agent_positions(initial_state)
 
         # Initialize task lists for each agent color
@@ -373,7 +376,11 @@ class Manager:
                 file=sys.stderr,
                 flush=True,
             )
-            if self.agents[agent_id].awaiting_cnt > 10:
+            awaiting_threshold = (
+                10
+                + agent_id  # number of timesteps to wait before attempting to preplan anyway
+            )
+            if self.agents[agent_id].awaiting_cnt > awaiting_threshold:
                 print(
                     f"  Agent {agent_id}: has been awaiting for {self.agents[agent_id].awaiting_cnt} timesteps, will attempt to preplan regardless of awaiting status.",
                     file=sys.stderr,
@@ -506,30 +513,53 @@ class Manager:
                         file=sys.stderr,
                         flush=True,
                     )
-                # elif (
-                #     obstacles is not None
-                #     and len(obstacles) > 0
-                #     and obstacles[0][4] == "agent"
-                # ):
-                #     print(
-                #         f"  Agent {agent_id}: agent obstacle detected at ({obstacles[0][0]}, {obstacles[0][1]}). Will attempt to re-plan with original task and hope to find a way around the agent obstacle.",
-                #         file=sys.stderr,
-                #         flush=True,
-                #     )
-                # obstacle_agent_id = next(
-                #     agent.agent_id
-                #     for agent in self.agents
-                #     if agent.agent_id != agent_id
-                #     and State.agent_colors[agent.agent_id] == obstacles[0][2]
-                #     and agent.agent_row == obstacles[0][0]
-                #     and agent.agent_col == obstacles[0][1]
-                # )
-                # self.agents_awaiting_other_agent[agent_id] = obstacle_agent_id
+            elif (
+                obstacles is not None
+                and len(obstacles) > 0
+                and obstacles[0][4] == "agent"
+            ):
+                print(
+                    f"  Agent {agent_id}: agent obstacle detected at ({obstacles[0][0]}, {obstacles[0][1]}). Will attempt to re-plan with original task and hope to find a way around the agent obstacle.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                obstacle_agent_id = next(
+                    agent.agent_id
+                    for agent in self.agents
+                    if agent.agent_id != agent_id
+                    and State.agent_colors[agent.agent_id] == obstacles[0][2]
+                    and agent.agent_row == obstacles[0][0]
+                    and agent.agent_col == obstacles[0][1]
+                )
+                self.agents_awaiting_other_agent[agent_id] = obstacle_agent_id
 
-                """
-                1. get that agent to make some move in any way possible 
-                
-                """
+                if (
+                    self.agents[obstacle_agent_id].task is not None
+                    and len(self.agents[obstacle_agent_id]._plan) == 0
+                ):
+                    # give that agent some random move that is available (Move only for now)
+                    obstacle_agent = self.agents[obstacle_agent_id]
+                    # Candidate move actions
+                    candidate_moves = [
+                        Action.MoveN,
+                        Action.MoveS,
+                        Action.MoveE,
+                        Action.MoveW,
+                    ]
+                    valid_moves = [
+                        a
+                        for a in candidate_moves
+                        if joint_state.is_applicable(obstacle_agent.agent_id, a)
+                    ]
+                    if valid_moves:
+                        chosen = random.choice(valid_moves)
+                        obstacle_agent._plan = [chosen]
+                        obstacle_agent._plan_index = 0
+                        print(
+                            f"  Obstacle Agent {obstacle_agent_id}: given random unblock move {chosen.name_}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
 
             # NOTE: other edge cases here i guess
 
@@ -836,7 +866,10 @@ class Manager:
                 and task.crucial is True
             ):
                 # move this solved box task back to future since box is now an obstacle that needs to be moved
-                task.object_pos = (obs_r, obs_c)
+                task.object_pos = (
+                    self.agents[foreign_agent_id].agent_row,
+                    self.agents[foreign_agent_id].agent_col,
+                )
                 self.color_tasks[obs_color]["future_box_tasks"].append(task)
                 del self.color_tasks[obs_color]["solved_tasks"][idx]
                 print(
@@ -1143,9 +1176,32 @@ class Manager:
             action = agent.next_action()
             joint_action.append(action)
 
-        # Validate joint action
-        is_valid = self.is_joint_action_valid(joint_state, joint_action)
-        print(f"Joint action valid: {is_valid}", file=sys.stderr, flush=True)
+        # If an agent has had no plan for 10 consecutive turns, force a random
+        # valid Move so it can try to unblock itself.
+        for agent in self.agents:
+            if len(agent._plan) > 0 or agent.task is None:
+                self.agents_no_plan_cnt[agent.agent_id] = 0
+                continue
+
+            self.agents_no_plan_cnt[agent.agent_id] += 1
+            if self.agents_no_plan_cnt[agent.agent_id] >= 10:
+                random_move = self._get_random_valid_move(joint_state, agent.agent_id)
+                if random_move is not None:
+                    joint_action[agent.agent_id] = random_move
+                    self.agents_no_plan_cnt[agent.agent_id] = 0
+                    print(
+                        f"  Agent {agent.agent_id}: no plan for 10 rounds, forcing random move {random_move.name_}.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+
+        # Validate joint action and receive offending agents (if any)
+        is_valid, invalid_agents = self.is_joint_action_valid(joint_state, joint_action)
+        print(
+            f"Joint action valid: {is_valid}; invalid agents: {invalid_agents}",
+            file=sys.stderr,
+            flush=True,
+        )
 
         if not is_valid:
             """
@@ -1153,13 +1209,35 @@ class Manager:
             2. clear all agent plans (to force replanning in next turn, which may resolve conflicts)
                 - maybe only clear plans of agents involved in the invalid action? but that requires more complex logic to determine which agents are involved in the invalidity
             """
-            joint_action = [Action.NoOp for _ in self.agents]
-            for agent in self.agents:
+            joint_action = [
+                action if agent.agent_id not in invalid_agents else Action.NoOp
+                for agent, action in zip(self.agents, joint_action, strict=True)
+            ]
+            for agent_id in invalid_agents:
+                agent = self.agents[agent_id]
                 agent._plan = []
                 agent._plan_index = 0
+            # joint_action = [Action.NoOp for _ in self.agents]
+            # for agent in self.agents:
+            #     agent._plan = []
+            #     agent._plan_index = 0
 
         self.timestep += 1
         return joint_action
+
+    def _get_random_valid_move(
+        self, joint_state: State, agent_id: int
+    ) -> Action | None:
+        """Return a random valid move-only action for the agent, or None if blocked."""
+        candidates = [Action.MoveN, Action.MoveS, Action.MoveE, Action.MoveW]
+        valid_moves = [
+            action
+            for action in candidates
+            if joint_state.is_applicable(agent_id, action)
+        ]
+        if not valid_moves:
+            return None
+        return random.choice(valid_moves)
 
     def _sync_agent_positions(self, joint_state: State) -> None:
         """Cache the latest row/col position for each agent."""
@@ -1182,41 +1260,51 @@ class Manager:
 
     def is_joint_action_valid(
         self, joint_state: State, joint_action: list[Action]
-    ) -> bool:
+    ) -> tuple[bool, list[int]]:
         """
-        Validate a joint action comprehensively.
+        Validate a joint action comprehensively and return offending agents.
 
         Checks:
         1. Each action is applicable for its agent
         2. No conflicts between agents (collisions, swaps, etc.)
         3. All agents have valid positions
 
-        Returns True if valid, False otherwise.
+        Returns a tuple (is_valid, invalid_agent_ids). `invalid_agent_ids` is
+        an empty list when `is_valid` is True. Otherwise it contains the IDs
+        of agents that appear to be performing invalid or conflicting actions.
         """
+        invalid_agents: set[int] = set()
+
         # Check: correct number of actions
         if len(joint_action) != len(self.agents):
-            return False
+            return False, []
 
         # Check: each action is applicable for the agent
         for agent_id, action in enumerate(joint_action):
             if not joint_state.is_applicable(agent_id, action):
-                return False
+                invalid_agents.add(agent_id)
 
-        # Check: no conflicts between agents
-        # Manually validate conflicts more carefully
+        # Prepare maps for conflict detection
         num_agents = len(self.agents)
-        dest: set[tuple[int, int]] = set()  # agent destinations
-        box_dest: set[tuple[int, int]] = set()  # box destinations
+        # dest: destination coord -> agent_id that will occupy it
+        dest: dict[tuple[int, int], int] = {}
+        # box_dest: destination coord -> agent_id that will push/pull a box there
+        box_dest: dict[tuple[int, int], int] = {}
         agent_destinations: list[tuple[int, int] | None] = [None] * num_agents
+
+        # Current positions map
+        cur_pos: dict[tuple[int, int], int] = {}
+        for aid in range(num_agents):
+            cur_pos[(joint_state.agent_rows[aid], joint_state.agent_cols[aid])] = aid
 
         # First pass: mark positions of agents doing NoOp (staying in place)
         for agent_id, action in enumerate(joint_action):
             ar, ac = joint_state.agent_rows[agent_id], joint_state.agent_cols[agent_id]
             if action.type is ActionType.NoOp:
-                dest.add((ar, ac))  # Mark current position as occupied
+                dest[(ar, ac)] = agent_id  # Mark current position as occupied
                 agent_destinations[agent_id] = (ar, ac)
 
-        # Second pass: check movement actions against occupied cells
+        # Second pass: check movement actions against occupied cells and record conflicts
         for agent_id, action in enumerate(joint_action):
             ar, ac = joint_state.agent_rows[agent_id], joint_state.agent_cols[agent_id]
 
@@ -1227,11 +1315,13 @@ class Manager:
                 nr, nc = ar + action.agent_row_delta, ac + action.agent_col_delta
                 # Check if destination is already taken by another agent
                 if (nr, nc) in dest:
-                    return False
+                    invalid_agents.add(agent_id)
+                    invalid_agents.add(dest[(nr, nc)])
                 # Check if destination will have a box pushed there
                 if (nr, nc) in box_dest:
-                    return False
-                dest.add((nr, nc))
+                    invalid_agents.add(agent_id)
+                    invalid_agents.add(box_dest[(nr, nc)])
+                dest[(nr, nc)] = agent_id
                 agent_destinations[agent_id] = (nr, nc)
 
             elif action.type is ActionType.Push:
@@ -1239,30 +1329,36 @@ class Manager:
                 bdr, bdc = br + action.box_row_delta, bc + action.box_col_delta
                 # Check if box destination is already taken by another box
                 if (bdr, bdc) in box_dest:
-                    return False
+                    invalid_agents.add(agent_id)
+                    invalid_agents.add(box_dest[(bdr, bdc)])
                 # Check if box destination will have an agent
                 if (bdr, bdc) in dest:
-                    return False
+                    invalid_agents.add(agent_id)
+                    invalid_agents.add(dest[(bdr, bdc)])
                 # Check if agent's entry to box cell conflicts with another agent
                 if (br, bc) in dest:
-                    return False
-                box_dest.add((bdr, bdc))
-                dest.add((br, bc))
+                    invalid_agents.add(agent_id)
+                    invalid_agents.add(dest[(br, bc)])
+                box_dest[(bdr, bdc)] = agent_id
+                dest[(br, bc)] = agent_id
                 agent_destinations[agent_id] = (br, bc)
 
             elif action.type is ActionType.Pull:
                 nr, nc = ar + action.agent_row_delta, ac + action.agent_col_delta
                 # Check if new agent position conflicts
                 if (nr, nc) in dest:
-                    return False
+                    invalid_agents.add(agent_id)
+                    invalid_agents.add(dest[(nr, nc)])
                 # Check if new agent position will have a box destination
                 if (nr, nc) in box_dest:
-                    return False
+                    invalid_agents.add(agent_id)
+                    invalid_agents.add(box_dest[(nr, nc)])
                 # Check if agent's old position (where box is pulled) conflicts
                 if (ar, ac) in dest:
-                    return False
-                dest.add((nr, nc))
-                box_dest.add((ar, ac))
+                    invalid_agents.add(agent_id)
+                    invalid_agents.add(dest[(ar, ac)])
+                dest[(nr, nc)] = agent_id
+                box_dest[(ar, ac)] = agent_id
                 agent_destinations[agent_id] = (nr, nc)
 
         # Check: detect position swaps (two agents exchanging positions is forbidden)
@@ -1278,10 +1374,9 @@ class Manager:
                 if di == (
                     joint_state.agent_rows[j],
                     joint_state.agent_cols[j],
-                ) and dj == (
-                    joint_state.agent_rows[i],
-                    joint_state.agent_cols[i],
-                ):
-                    return False
+                ) and dj == (joint_state.agent_rows[i], joint_state.agent_cols[i]):
+                    invalid_agents.add(i)
+                    invalid_agents.add(j)
 
-        return True
+        is_valid = len(invalid_agents) == 0
+        return is_valid, sorted(invalid_agents)
