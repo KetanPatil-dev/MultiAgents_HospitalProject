@@ -317,15 +317,21 @@ class Manager:
             return False
 
         if len(agent._plan) == 0:
-            obstacle_info = self._find_same_color_obstacle(
-                joint_state, agent.agent_id, current_task
-            )
+            obstacles = self._find_obstacles(joint_state, agent_id, current_task)
+            # obstacle_info = self._find_same_color_obstacle(
+            #     joint_state, agent.agent_id, current_task
+            # )
 
-            if obstacle_info is not None:
+            if (
+                obstacles is not None
+                and len(obstacles) > 0
+                and obstacles[0][2] == State.agent_colors[agent_id]
+                and obstacles[0][4] == "box"
+            ):
                 managed_to_swap = self._swap_task_with_obstacle(
                     agent.agent_id,
                     current_task,
-                    obstacle_info,
+                    obstacles[0],
                 )
                 if managed_to_swap and agent.task is not None:
                     current_task = agent.task
@@ -385,6 +391,198 @@ class Manager:
                 task.goal_pos[1],
                 None,
             )
+
+    def _find_obstacles(
+        self, initial_state: State, agent_id: int, failed_task: Task
+    ) -> list[tuple[int, int, Color, bool, str]] | None:
+        # If the full-world planner already finds a route, there are no
+        # blocking obstacles to report.
+        direct_plan = solve(
+            state=initial_state,
+            agent_id=agent_id,
+            goal=(
+                failed_task.object_pos[0],
+                failed_task.object_pos[1],
+                failed_task.goal_pos[0],
+                failed_task.goal_pos[1],
+                failed_task.box_char,
+            ),
+            constraints=set(),
+            dist_map=self.dist_map,
+        )
+        if direct_plan is not None:
+            return []
+
+        # Build a reduced ghost state containing only the current agent and,
+        # for move_box tasks, only the target box. This gives us a shortest
+        # path in the map topology while ignoring irrelevant objects.
+        ghost_agent_rows = [
+            row if idx == agent_id else 0
+            for idx, row in enumerate(initial_state.agent_rows)
+        ]
+        ghost_agent_cols = [
+            col if idx == agent_id else 0
+            for idx, col in enumerate(initial_state.agent_cols)
+        ]
+        ghost_boxes = [["" for _ in row] for row in initial_state.boxes]
+        if failed_task.task_type == "move_box" and failed_task.box_char is not None:
+            box_r, box_c = failed_task.object_pos
+            ghost_boxes[box_r][box_c] = failed_task.box_char
+
+        ghost_state = State(ghost_agent_rows, ghost_agent_cols, ghost_boxes)
+
+        goal = self._convert_task_to_goal_tuple(failed_task)
+        plan = solve(
+            state=ghost_state,
+            agent_id=agent_id,
+            goal=goal,
+            constraints=set(),
+            dist_map=self.dist_map,
+        )
+        if plan is None:
+            return None
+
+        obstacles: list[tuple[int, int, Color, bool, str]] = []
+        # NOTE: obstacles is a list of tuples such that:
+        # - (r, c, color, obstacle_after_box, object_type)
+
+        seen: set[tuple[int, int, str]] = set()
+        # NOTE: seen is a set of (r, c, object_type) to avoid adding the same obstacle multiple times if it appears in multiple steps of the path
+
+        def add_obstacle(
+            r: int,
+            c: int,
+            obstacle_color: Color,
+            obstacle_after_box: bool,
+            obstacle_type: str,
+        ) -> None:
+            key = (r, c, obstacle_type)
+            if key in seen:
+                return
+            seen.add(key)
+            obstacles.append((r, c, obstacle_color, obstacle_after_box, obstacle_type))
+
+        target_box_char = failed_task.box_char
+        target_box_pos = (
+            failed_task.object_pos if failed_task.task_type == "move_box" else None
+        )
+        target_box_moved = False
+
+        sim_agent_r = initial_state.agent_rows[agent_id]
+        sim_agent_c = initial_state.agent_cols[agent_id]
+        sim_target_box_r, sim_target_box_c = (
+            target_box_pos if target_box_pos is not None else (None, None)
+        )
+
+        def inspect_cell(r: int, c: int, obstacle_after_box: bool) -> None:
+            # Check agents first.
+            for other_id, (ar, ac) in enumerate(
+                zip(initial_state.agent_rows, initial_state.agent_cols)
+            ):
+                if other_id == agent_id:
+                    continue
+                if ar == r and ac == c:
+                    add_obstacle(
+                        r,
+                        c,
+                        str(State.agent_colors[other_id]),
+                        obstacle_after_box,
+                        "agent",
+                    )
+                    return
+
+            # Then check boxes.
+            ch = initial_state.boxes[r][c]
+            if not ch:
+                return
+            if (
+                target_box_char is not None
+                and failed_task.task_type == "move_box"
+                and ch == target_box_char
+                and (r, c) == (sim_target_box_r, sim_target_box_c)
+            ):
+                return
+
+            color = State.box_colors[ord(ch) - ord("A")]
+            if color is None:
+                return
+            add_obstacle(r, c, color, obstacle_after_box, "box")
+
+        for action in plan:
+            # Obstacles are considered "after the box" if the target box has
+            # already moved, or if this very action moves the target box into
+            # the obstacle's field.
+            moves_target_box_this_action = False
+            if failed_task.task_type == "move_box" and target_box_char is not None:
+                if action.type is ActionType.Push:
+                    src_r = sim_agent_r + action.agent_row_delta
+                    src_c = sim_agent_c + action.agent_col_delta
+                    moves_target_box_this_action = (
+                        initial_state.boxes[src_r][src_c] == target_box_char
+                    )
+                elif action.type is ActionType.Pull:
+                    box_r = sim_agent_r - action.box_row_delta
+                    box_c = sim_agent_c - action.box_col_delta
+                    moves_target_box_this_action = (
+                        initial_state.boxes[box_r][box_c] == target_box_char
+                    )
+
+            obstacle_after_box = (
+                target_box_moved or moves_target_box_this_action
+                if failed_task.task_type == "move_box"
+                else False
+            )
+
+            if action.type is ActionType.Move:
+                next_r = sim_agent_r + action.agent_row_delta
+                next_c = sim_agent_c + action.agent_col_delta
+                inspect_cell(next_r, next_c, obstacle_after_box)
+                sim_agent_r, sim_agent_c = next_r, next_c
+                continue
+
+            if action.type is ActionType.Push:
+                src_r = sim_agent_r + action.agent_row_delta
+                src_c = sim_agent_c + action.agent_col_delta
+                dst_r = src_r + action.box_row_delta
+                dst_c = src_c + action.box_col_delta
+
+                inspect_cell(src_r, src_c, obstacle_after_box)
+                inspect_cell(dst_r, dst_c, obstacle_after_box)
+
+                # If the target box is the one being pushed, mark the rest of the
+                # path as after the box has been reached/moved.
+                if (
+                    failed_task.task_type == "move_box"
+                    and target_box_char is not None
+                    and initial_state.boxes[src_r][src_c] == target_box_char
+                ):
+                    target_box_moved = True
+                    sim_target_box_r, sim_target_box_c = dst_r, dst_c
+
+                sim_agent_r, sim_agent_c = src_r, src_c
+                continue
+
+            if action.type is ActionType.Pull:
+                next_r = sim_agent_r + action.agent_row_delta
+                next_c = sim_agent_c + action.agent_col_delta
+                box_r = sim_agent_r - action.box_row_delta
+                box_c = sim_agent_c - action.box_col_delta
+
+                inspect_cell(next_r, next_c, obstacle_after_box)
+                inspect_cell(box_r, box_c, obstacle_after_box)
+                inspect_cell(sim_agent_r, sim_agent_c, obstacle_after_box)
+
+                if (
+                    failed_task.task_type == "move_box"
+                    and target_box_char is not None
+                    and initial_state.boxes[box_r][box_c] == target_box_char
+                ):
+                    target_box_moved = True
+                    sim_target_box_r, sim_target_box_c = sim_agent_r, sim_agent_c
+
+                sim_agent_r, sim_agent_c = next_r, next_c
+
+        return obstacles
 
     def _find_same_color_obstacle(
         self,
@@ -474,7 +672,7 @@ class Manager:
         self,
         agent_id: int,
         failed_task: Task,
-        obstacle: tuple[int, int, str, bool],
+        obstacle: tuple[int, int, Color, bool, str],
     ) -> bool:
         """
         Swap current task with an obstacle task if possible.
@@ -482,16 +680,16 @@ class Manager:
         Args:
             agent_id: ID of the agent with the failed task
             failed_task: The task that failed to plan
-            obstacle: (obs_r, obs_c, obs_char) position and char of the blocking box
-            can_reach_box: True if agent can reach the box (obstacle before box),
-                          False if agent cannot reach the box (obstacle at box position)
+            obstacle: (obs_r, obs_c, obs_color, obstacle_after_box, obstacle_type) position and color of the blocking box
+
+
         """
         assert self.profile is not None
 
-        obs_r, obs_c, obs_char, can_reach_box = obstacle
+        obs_r, obs_c, obs_color, obstacle_after_box, obstacle_type = obstacle
 
         print(
-            f"  Same-colored obstacle detected: box {obs_char} at ({obs_r}, {obs_c}) blocks Agent {agent_id}.",
+            f"  Same-colored obstacle detected: box {obs_color} at ({obs_r}, {obs_c}) blocks Agent {agent_id}.",
             file=sys.stderr,
             flush=True,
         )
@@ -534,7 +732,9 @@ class Manager:
                     self.color_tasks[target_color]["future_box_tasks"]
                 )
                 if task.task_type == "move_box"
-                and task.box_char == obs_char
+                # and task.box_char == obs_char
+                and task.box_char is not None
+                and obs_color == State.box_colors[ord(task.box_char) - ord("A")]
                 and task.object_pos == (obs_r, obs_c)
             ),
             None,
@@ -547,12 +747,15 @@ class Manager:
             if (
                 other_current is not None
                 and other_current.task_type == "move_box"
-                and other_current.box_char == obs_char
+                # and other_current.box_char == obs_char
+                and other_current.box_char is not None
+                and obs_color
+                == State.box_colors[ord(other_current.box_char) - ord("A")]
                 and other_current.object_pos == (obs_r, obs_c)
             ):
                 obstacle_assigned_to_agent_id = other_agent.agent_id
                 print(
-                    f"Obstacle task for box {obs_char} at ({obs_r}, {obs_c}) is currently assigned to Agent {other_agent.agent_id}.",
+                    f"Obstacle task for box {obs_color} at ({obs_r}, {obs_c}) is currently assigned to Agent {other_agent.agent_id}.",
                     file=sys.stderr,
                     flush=True,
                 )
@@ -563,18 +766,18 @@ class Manager:
             new_task = Task(
                 task_type="move_box",
                 object_pos=(
-                    (failed_task.object_pos) if can_reach_box else (obs_r, obs_c)
+                    (failed_task.object_pos) if obstacle_after_box else (obs_r, obs_c)
                 ),
                 goal_pos=(
                     self.agents[agent_id].agent_row,
                     self.agents[agent_id].agent_col,
                 ),
-                box_char=obs_char,
+                box_char=State.get_box_char_from_color(obs_color),
             )
 
             # # remove failed_task from current tasks and add to front of future tasks
             failed_task = current_task
-            if can_reach_box is True:
+            if obstacle_after_box is True:
                 failed_task.object_pos = (obs_r, obs_c)
 
             if failed_task.task_type == "move_box" and failed_task.box_char is not None:
@@ -600,7 +803,7 @@ class Manager:
             self._sync_agent_task_state(agent_id, new_task)
 
             print(
-                f"Swapped tasks, was able to reach box directly: {can_reach_box}.",
+                f"Swapped tasks, was able to reach box directly: {obstacle_after_box}.",
                 file=sys.stderr,
                 flush=True,
             )

@@ -31,7 +31,7 @@ class State:
     ) -> None:
         self.agent_rows = agent_rows  # indexed by agent id
         self.agent_cols = agent_cols
-        self.boxes = boxes            # boxes[row][col] in 'A'-'Z' | ''
+        self.boxes = boxes  # boxes[row][col] in 'A'-'Z' | ''
         self.parent: State | None = None
         self.joint_action: list[Action] | None = None
         self.g: int = 0
@@ -56,8 +56,10 @@ class State:
             bdr, bdc = br + action.box_row_delta, bc + action.box_col_delta
             if not self.boxes[br][bc]:
                 return False
-            box_idx = ord(self.boxes[br][bc]) - ord('A')
-            if not Color.compatible(State.agent_colors[agent], State.box_colors[box_idx]):
+            box_idx = ord(self.boxes[br][bc]) - ord("A")
+            if not Color.compatible(
+                State.agent_colors[agent], State.box_colors[box_idx]
+            ):
                 return False
             return self.is_free(bdr, bdc)
 
@@ -68,14 +70,16 @@ class State:
                 return False
             if not self.boxes[br][bc]:
                 return False
-            box_idx = ord(self.boxes[br][bc]) - ord('A')
-            return Color.compatible(State.agent_colors[agent], State.box_colors[box_idx])
+            box_idx = ord(self.boxes[br][bc]) - ord("A")
+            return Color.compatible(
+                State.agent_colors[agent], State.box_colors[box_idx]
+            )
 
         return False
 
     def is_conflicting(self, joint_action: list[Action]) -> bool:
         num_agents = len(self.agent_rows)
-        dest: set[tuple[int, int]] = set()      # agent destinations
+        dest: set[tuple[int, int]] = set()  # agent destinations
         box_dest: set[tuple[int, int]] = set()  # box destinations
         agent_destinations: list[tuple[int, int] | None] = [None] * num_agents
 
@@ -87,9 +91,9 @@ class State:
 
             if action.type is ActionType.Move:
                 nr, nc = ar + action.agent_row_delta, ac + action.agent_col_delta
-                if (nr, nc) in dest:        # two agents moving to same cell
+                if (nr, nc) in dest:  # two agents moving to same cell
                     return True
-                if (nr, nc) in box_dest:    # agent moving to where a box is pushed
+                if (nr, nc) in box_dest:  # agent moving to where a box is pushed
                     return True
                 dest.add((nr, nc))
                 agent_destinations[agent] = (nr, nc)
@@ -99,9 +103,12 @@ class State:
                 bdr, bdc = br + action.box_row_delta, bc + action.box_col_delta
                 if (bdr, bdc) in box_dest:  # two boxes pushed to same cell
                     return True
-                if (bdr, bdc) in dest:      # box pushed to where an agent is going
+                if (bdr, bdc) in dest:  # box pushed to where an agent is going
                     return True
-                if (br, bc) in dest:        # agent (entering box cell) conflicts with another agent
+                if (
+                    br,
+                    bc,
+                ) in dest:  # agent (entering box cell) conflicts with another agent
                     return True
                 box_dest.add((bdr, bdc))
                 dest.add((br, bc))
@@ -109,14 +116,14 @@ class State:
 
             elif action.type is ActionType.Pull:
                 nr, nc = ar + action.agent_row_delta, ac + action.agent_col_delta
-                if (nr, nc) in dest:        # two agents moving to same cell
+                if (nr, nc) in dest:  # two agents moving to same cell
                     return True
-                if (nr, nc) in box_dest:    # agent moving to where a box is pushed
+                if (nr, nc) in box_dest:  # agent moving to where a box is pushed
                     return True
-                if (ar, ac) in dest:        # box pulled to where another agent is going
+                if (ar, ac) in dest:  # box pulled to where another agent is going
                     return True
                 dest.add((nr, nc))
-                box_dest.add((ar, ac))      # box pulled into agent's current (vacated) cell
+                box_dest.add((ar, ac))  # box pulled into agent's current (vacated) cell
                 agent_destinations[agent] = (nr, nc)
 
         # Detect position swaps: two agents exchanging cells is forbidden.
@@ -129,8 +136,10 @@ class State:
                     continue
                 dj = agent_destinations[j]
                 # Swap if i goes where j was AND j goes where i was
-                if (di == (self.agent_rows[j], self.agent_cols[j])
-                        and dj == (self.agent_rows[i], self.agent_cols[i])):
+                if di == (self.agent_rows[j], self.agent_cols[j]) and dj == (
+                    self.agent_rows[i],
+                    self.agent_cols[i],
+                ):
                     return True
 
         return False
@@ -170,10 +179,10 @@ class State:
     def is_goal_state(self) -> bool:
         for r, row in enumerate(State.goals):
             for c, g in enumerate(row):
-                if 'A' <= g <= 'Z' and self.boxes[r][c] != g:
+                if "A" <= g <= "Z" and self.boxes[r][c] != g:
                     return False
-                if '0' <= g <= '9':
-                    aid = ord(g) - ord('0')
+                if "0" <= g <= "9":
+                    aid = ord(g) - ord("0")
                     if self.agent_rows[aid] != r or self.agent_cols[aid] != c:
                         return False
         return True
@@ -185,8 +194,7 @@ class State:
     def get_expanded_states(self) -> list[State]:
         num_agents = len(self.agent_rows)
         applicable = [
-            [a for a in Action if self.is_applicable(ag, a)]
-            for ag in range(num_agents)
+            [a for a in Action if self.is_applicable(ag, a)] for ag in range(num_agents)
         ]
 
         joint_action = [Action.NoOp] * num_agents
@@ -240,20 +248,29 @@ class State:
     def agent_at(self, r: int, c: int) -> str | None:
         for i, (ar, ac) in enumerate(zip(self.agent_rows, self.agent_cols)):
             if ar == r and ac == c:
-                return chr(i + ord('0'))
+                return chr(i + ord("0"))
         return None
 
     # ------------------------------------------------------------------
     # Hash / equality — only mutable fields
     # ------------------------------------------------------------------
 
+    @classmethod
+    def get_box_char_from_color(cls, color: Color) -> str | None:
+        for i, box_color in enumerate(cls.box_colors):
+            if box_color == color:
+                return chr(i + ord("A"))
+        return None
+
     def __hash__(self) -> int:
         if self._hash is None:
-            self._hash = hash((
-                tuple(self.agent_rows),
-                tuple(self.agent_cols),
-                tuple(tuple(row) for row in self.boxes),
-            ))
+            self._hash = hash(
+                (
+                    tuple(self.agent_rows),
+                    tuple(self.agent_cols),
+                    tuple(tuple(row) for row in self.boxes),
+                )
+            )
         return self._hash
 
     def __eq__(self, other: object) -> bool:
