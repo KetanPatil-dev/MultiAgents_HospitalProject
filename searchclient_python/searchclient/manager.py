@@ -335,13 +335,16 @@ class Manager:
         agent = self.agents[agent_id]
         current_task = agent.task
 
-        if self.agents_awaiting_other_agent[agent_id] is not None:
-            print(
-                f"  Agent {agent_id}: currently awaiting task from Agent {self.agents_awaiting_other_agent[agent_id]}, skipping preplan until that task is received.",
-                file=sys.stderr,
-                flush=True,
-            )
-            return False
+        # NOTE: an agent should try to solve its task and if it keeps on failing then it should just await
+        # this is because another agent can unblock it by solving the obstacle task that is blocking it
+        # tho for now i will just skip this check as the agents are stuck awaiting each other despite their plans have changed?
+        # if self.agents_awaiting_other_agent[agent_id] is not None:
+        #     print(
+        #         f"  Agent {agent_id}: currently awaiting task from Agent {self.agents_awaiting_other_agent[agent_id]}, skipping preplan until that task is received.",
+        #         file=sys.stderr,
+        #         flush=True,
+        #     )
+        #     return False
 
         if current_task is None:
             return False
@@ -451,6 +454,7 @@ class Manager:
                         self.agents_awaiting_other_agent[agent_id] = (
                             foreign_agent.agent_id
                         )
+                        self.agents_awaiting_other_agent[foreign_agent.agent_id] = None
                 else:
                     print(
                         f"  Agent {agent_id}: already awaiting task from Agent {self.agents_awaiting_other_agent[agent_id]}.",
@@ -1073,6 +1077,10 @@ class Manager:
         for agent in self.agents:
             action = agent.next_action()
             joint_action.append(action)
+
+        # Validate joint action
+        is_valid = not joint_state.is_conflicting(joint_action)
+        print(f"Joint action valid: {is_valid}", file=sys.stderr, flush=True)
 
         self.timestep += 1
         return joint_action
