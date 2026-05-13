@@ -327,9 +327,6 @@ class Manager:
 
         if len(agent._plan) == 0:
             obstacles = self._find_obstacles(joint_state, agent_id, current_task)
-            # obstacle_info = self._find_same_color_obstacle(
-            #     joint_state, agent.agent_id, current_task
-            # )
 
             if (
                 obstacles is not None
@@ -660,90 +657,6 @@ class Manager:
 
         return obstacles
 
-    def _find_same_color_obstacle(
-        self,
-        initial_state: State,
-        agent_id: int,
-        failed_task: Task,
-    ) -> tuple[int, int, str, bool] | None:
-        """
-        First try to solve the task normally, which allows the planner to
-        reroute around same-colored boxes if a route exists.
-
-        Only if that fails do we inspect the shortest path and return the first
-        same-colored box that is actually blocking access.
-
-        Returns (obs_r, obs_c, obs_char, can_reach_box) where:
-        - can_reach_box is True if agent can reach the box (A* finds a path avoiding same-colored boxes)
-        - can_reach_box is False if agent cannot reach the box (blocked by same-colored boxes)
-        """
-        from searchclient.planner.astar import solve
-
-        if failed_task.box_char is None:
-            target_color = State.agent_colors[agent_id]
-            # return None
-        else:
-            target_color = State.box_colors[ord(failed_task.box_char) - ord("A")]
-
-        if target_color is None:
-            return None
-
-        # Try to solve the task directly first. If the planner can find a route,
-        # then same-colored boxes are not blocking and we should not trigger a swap.
-        direct_plan = solve(
-            state=initial_state,
-            agent_id=agent_id,
-            goal=(
-                failed_task.object_pos[0],
-                failed_task.object_pos[1],
-                failed_task.goal_pos[0],
-                failed_task.goal_pos[1],
-                failed_task.box_char,
-            ),
-            constraints=set(),
-            dist_map=self.dist_map,
-        )
-        if direct_plan is not None:
-            return None
-
-        agent = self.agents[agent_id]
-        agent_r = initial_state.agent_rows[agent_id]
-        agent_c = initial_state.agent_cols[agent_id]
-
-        if failed_task.task_type == "move_box":
-            obstacle = agent._find_path_obstacle(
-                initial_state,
-                agent_r,
-                agent_c,
-                failed_task.object_pos[0],
-                failed_task.object_pos[1],
-            )
-        elif failed_task.task_type == "move_agent":
-            obstacle = agent._find_path_obstacle(
-                initial_state,
-                agent_r,
-                agent_c,
-                failed_task.goal_pos[0],
-                failed_task.goal_pos[1],
-            )
-        else:
-            print(
-                f"  Unknown task type for obstacle detection: {failed_task.task_type}",
-                file=sys.stderr,
-                flush=True,
-            )
-        if obstacle is None:
-            return None
-
-        obs_r, obs_c, obs_char = obstacle
-        obstacle_color = State.box_colors[ord(obs_char) - ord("A")]
-        if obstacle_color != target_color:
-            return None
-
-        # Planner could not find a route; identify the first same-colored box
-        # on a shortest path from the agent to the target box.
-        return (obs_r, obs_c, obs_char, False)
-
     def _swap_task_with_obstacle(
         self,
         agent_id: int,
@@ -769,15 +682,6 @@ class Manager:
             flush=True,
         )
 
-        # current_tasks = self.agent_tasks[agent_id]["current"]
-        # if not current_tasks:
-        #     print(
-        #         f"  Swap failed: Agent {agent_id} has no current task list.",
-        #         file=sys.stderr,
-        #         flush=True,
-        #     )
-        #     return False
-
         current_task = self.agents[agent_id].task
         if current_task is None:
             print(
@@ -787,18 +691,11 @@ class Manager:
             )
             return False
 
-        # assert failed_task.box_char is not None
         if current_task is None or current_task.box_char is None:
             target_color = State.agent_colors[agent_id]
         else:
             target_color = State.box_colors[ord(current_task.box_char) - ord("A")]
         assert target_color is not None
-
-        # First try to find that obstacle task in the color future list.
-        # color_bucket = self.color_tasks.setdefault(
-        #     target_color, {"future": deque(), "current": deque()}
-        # )
-        # future_tasks = color_bucket["future"]
 
         obstacle_index = next(
             (
@@ -973,95 +870,10 @@ class Manager:
                 file=sys.stderr,
                 flush=True,
             )
-            # print(
-            #     f"  No future task found for obstacle box {obs_char} at ({obs_r}, {obs_c}) nor any current task found for other agents. "
-            #     + " Just adding a new task to the front of the current task list for Agent {agent_id}.",
-            #     file=sys.stderr,
-            #     flush=True,
-            # )
 
             return True
 
         print("Swapping edgecase NOT IMPLEMENTED YET")
-        return False
-
-        # if obstacle_index is not None:
-        #     obstacle_task = future_tasks.pop(obstacle_index)
-
-        #     obstacle_goal_x, obstacle_goal_y = obstacle_task.goal_pos
-        #     failed_goal_x, failed_goal_y = failed_task.goal_pos
-
-        #     obstacle_task.goal_pos = (failed_goal_x, failed_goal_y)
-        #     failed_task.goal_pos = (obstacle_goal_x, obstacle_goal_y)
-
-        #     future_tasks.insert(0, failed_task)
-        #     current_tasks[0] = obstacle_task
-        #     print(
-        #         f"  Swapped current task with future obstacle task for Agent {agent_id}.",
-        #         file=sys.stderr,
-        #         flush=True,
-        #     )
-        #     return True
-
-        # # NOTE: now we need to consider 2 cases:
-        # """
-        # 0. obstacle doesnt have a task
-        # 1. same coloured agent but different one has that task of the obstacle - we will skip this one for now
-        # """
-
-        # for other_agent in self.agents:
-        #     if other_agent.agent_id == agent_id:
-        #         continue
-
-        #     other_current = self.agent_tasks[other_agent.agent_id]["current"]
-        #     for idx, task in enumerate(other_current):
-        #         if (
-        #             task.task_type == "move_box"
-        #             and task.box_char == obs_char
-        #             and task.object_pos == (obs_r, obs_c)
-        #         ):
-        #             print(
-        #                 f"  Found another agent {other_agent.agent_id} currently "
-        #                 + f"assigned to the obstacle task. This case IS NOT YET IMPLEMENTED, so swap failed for Agent {agent_id}.",
-        #                 file=sys.stderr,
-        #                 flush=True,
-        #             )
-        #             return False
-
-        # print(
-        #     f"No future task found for obstacle box {obs_char} at ({obs_r}, {obs_c}) nor any current task found for other agents. "
-        #     + " Just replacing the current task with the obstacle task",
-        #     file=sys.stderr,
-        #     flush=True,
-        # )
-        # self.agent_tasks[agent_id]["current"][0].object_pos = (obs_r, obs_c)
-
-        # return True
-
-        # Fallback: look for another agent that currently owns the obstacle task.
-        # for other_agent in self.agents:
-        #     other_current = self.agent_tasks[other_agent.agent_id]["current"]
-        #     for idx, task in enumerate(other_current):
-        # if (
-        #     task.task_type == "move_box"
-        #     and task.box_char == obs_char
-        #             and task.object_pos == (obs_r, obs_c)
-        #         ):
-        #             other_current[idx] = failed_task
-        #             current_tasks[0] = task
-        #             print(
-        #                 f"  Swapped current tasks between Agent {agent_id} and Agent {other_agent.agent_id}.",
-        #                 file=sys.stderr,
-        #                 flush=True,
-        #             )
-        #             return True
-
-        print(
-            f"  Swap failed: no task entry found for obstacle box {obs_char} at ({obs_r}, {obs_c}).",
-            file=sys.stderr,
-            flush=True,
-        )
-
         return False
 
     # ------------------------------------------------------------------
