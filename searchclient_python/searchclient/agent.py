@@ -50,6 +50,7 @@ class Agent:
         # Optional positional goal for the agent itself (no box)
         self.agent_goal: tuple[int, int] | None = None
         self.has_reached_its_goal: bool = False
+        self.awaiting_cnt: int = 0
 
         # Current plan and index
         self._plan: list[Action] = []

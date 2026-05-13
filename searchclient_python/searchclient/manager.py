@@ -365,7 +365,24 @@ class Manager:
 
         # NOTE: an agent should try to solve its task and if it keeps on failing then it should just await
         # this is because another agent can unblock it by solving the obstacle task that is blocking it
+
         # tho for now i will just skip this check as the agents are stuck awaiting each other despite their plans have changed?
+        if self.agents_awaiting_other_agent[agent_id] is not None:
+            print(
+                f"  Agent {agent_id}: currently awaiting task from Agent {self.agents_awaiting_other_agent[agent_id]}, but will attempt to preplan anyway in case the blocking obstacle has been resolved.",
+                file=sys.stderr,
+                flush=True,
+            )
+            if self.agents[agent_id].awaiting_cnt > 10:
+                print(
+                    f"  Agent {agent_id}: has been awaiting for {self.agents[agent_id].awaiting_cnt} timesteps, will attempt to preplan regardless of awaiting status.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                self.agents[agent_id].awaiting_cnt = 0
+            else:
+                self.agents[agent_id].awaiting_cnt += 1
+                return False
         # if self.agents_awaiting_other_agent[agent_id] is not None:
         #     print(
         #         f"  Agent {agent_id}: currently awaiting task from Agent {self.agents_awaiting_other_agent[agent_id]}, skipping preplan until that task is received.",
