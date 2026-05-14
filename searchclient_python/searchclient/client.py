@@ -18,7 +18,10 @@ Ejecutar:
 from __future__ import annotations
 
 import argparse
+import random
 import sys
+
+random.seed(50)
 
 from searchclient import memory
 from searchclient.level_parser import LevelParser

@@ -45,6 +45,11 @@ class Manager:
         self.color_tasks: dict[Color | None, ColorTasksTypedDict] = {}
         self.agents_awaiting_other_agent: dict[int, int | None] = {}
         self.agents_no_plan_cnt: dict[int, int] = {}
+        # Track how many times each box has been swap-cleared to prevent infinite oscillation
+        self.box_swap_count: dict[str, int] = {}
+        # Chokepoint goals: {(goal_r, goal_c): set[agent_ids_that_need_to_pass_through]}
+        # Delivering a box here is deferred until those agents reach their goals.
+        self.chokepoint_goals: dict[tuple[int, int], set[int]] = {}
 
     # ------------------------------------------------------------------
     # Setup (once after parsing)
@@ -92,19 +97,135 @@ class Manager:
         print("Building agent goal tasks...", file=sys.stderr, flush=True)
         self._build_agent_goal_tasks(initial_state)
 
-        # # Step 1c: Assign first task from each color group to respective agents
-        # print("Assigning initial tasks to agents...", file=sys.stderr, flush=True)
-        # self._assign_initial_tasks()
+        # Step 1c: Pre-inject corridor-clearing tasks for deco boxes that block passages
+        self._inject_corridor_clearing_tasks(initial_state)
 
-        # # Step 1d: Perform HCA* preplanning
-        # print("Performing HCA* preplanning...", file=sys.stderr, flush=True)
-        # self._hca_preplan(initial_state)
+        # Step 1d: Compute box-goal chokepoints — box deliveries that would
+        # block another agent's path to its agent-goal.
+        self._compute_chokepoints(initial_state)
+
+        # Step 1e: CBS preplanning — find a conflict-free joint plan for the
+        # first task of each agent. Subsequent tasks are handled reactively.
+        print("Running CBS preplanning...", file=sys.stderr, flush=True)
+        self._cbs_preplan(initial_state)
 
         print(
             f"Manager setup complete: {profile.num_agents} agents ready.",
             file=sys.stderr,
             flush=True,
         )
+
+    def _compute_chokepoints(self, initial_state: State) -> None:
+        """
+        For each box goal position, determine which agents' positional goals
+        become unreachable if that cell is treated as a permanent wall.
+        Box deliveries to such cells will be deferred until those agents
+        complete their positional goals.
+        """
+        from collections import deque as _dq
+        assert self.profile is not None
+        num_rows = len(State.walls)
+        num_cols = len(State.walls[0]) if num_rows > 0 else 0
+
+        def bfs_reachable(start: tuple[int, int], blocked_cell: tuple[int, int]) -> set[tuple[int, int]]:
+            visited: set[tuple[int, int]] = {start}
+            q: _dq = _dq([start])
+            while q:
+                r, c = q.popleft()
+                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    nr, nc = r + dr, c + dc
+                    if (nr, nc) in visited:
+                        continue
+                    if not (0 <= nr < num_rows and 0 <= nc < num_cols):
+                        continue
+                    if State.walls[nr][nc]:
+                        continue
+                    if (nr, nc) == blocked_cell:
+                        continue
+                    visited.add((nr, nc))
+                    q.append((nr, nc))
+            return visited
+
+        # For each box goal cell, simulate it as a wall and check agent reachability
+        for goal_r, goal_c, _ in self.profile.box_goals:
+            for ag_r, ag_c, aid in self.profile.agent_goals:
+                if (ag_r, ag_c) == (goal_r, goal_c):
+                    continue
+                start = (initial_state.agent_rows[aid], initial_state.agent_cols[aid])
+                reachable_without = bfs_reachable(start, blocked_cell=(-1, -1))
+                if (ag_r, ag_c) not in reachable_without:
+                    continue  # agent goal unreachable anyway, skip
+                reachable_with = bfs_reachable(start, blocked_cell=(goal_r, goal_c))
+                if (ag_r, ag_c) not in reachable_with:
+                    self.chokepoint_goals.setdefault((goal_r, goal_c), set()).add(aid)
+                    print(
+                        f"  Chokepoint: box goal ({goal_r},{goal_c}) blocks Agent {aid}'s "
+                        f"path to ({ag_r},{ag_c}). Will defer.",
+                        file=sys.stderr, flush=True,
+                    )
+
+    def _chokepoint_blockers_pending(self, task: Task) -> bool:
+        """Return True if delivering this box-task would block agents whose
+        positional goals are not yet satisfied."""
+        if task.task_type != "move_box":
+            return False
+        if task.goal_pos not in self.chokepoint_goals:
+            return False
+        blocked_agents = self.chokepoint_goals[task.goal_pos]
+        for aid in blocked_agents:
+            ag = self.agents[aid]
+            if not ag.has_reached_its_goal:
+                # check current position vs final agent goal
+                for gr, gc, gid in (self.profile.agent_goals if self.profile else []):
+                    if gid == aid and (ag.agent_row, ag.agent_col) != (gr, gc):
+                        return True
+        return False
+
+    def _cbs_preplan(self, initial_state: State) -> None:
+        """
+        Run CBS over all agents' first tasks. Pops one task per agent from the
+        future queues, runs CBS to find conflict-free plans, and stores them in
+        each agent's `_plan`. Falls back silently to reactive planning if CBS fails.
+        """
+        from searchclient.planner.cbs import cbs_solve
+
+        agent_goals: dict[int, tuple] = {}
+        assigned_tasks: dict[int, Task] = {}
+
+        for agent in self.agents:
+            task = self._pop_next_task_for_agent(agent.agent_id)
+            if task is None:
+                continue
+            assigned_tasks[agent.agent_id] = task
+            agent.task = task
+            self._sync_agent_task_state(agent.agent_id, task)
+            agent_goals[agent.agent_id] = self._convert_task_to_goal_tuple(task)
+
+        if not agent_goals:
+            print("  CBS: no tasks to plan.", file=sys.stderr, flush=True)
+            return
+
+        plans = cbs_solve(
+            state=initial_state,
+            agent_goals=agent_goals,
+            dist_map=self.dist_map,
+            max_nodes=200,
+        )
+
+        if plans is None:
+            print(
+                "  CBS preplan failed — falling back to reactive planning.",
+                file=sys.stderr, flush=True,
+            )
+            return
+
+        for aid, plan in plans.items():
+            self.agents[aid]._plan = plan
+            self.agents[aid]._plan_index = 0
+            print(
+                f"  CBS plan for Agent {aid}: length {len(plan)}",
+                file=sys.stderr, flush=True,
+            )
 
     def _build_box_goal_tasks(self) -> None:
         """
@@ -191,6 +312,86 @@ class Manager:
                     flush=True,
                 )
 
+    def _inject_corridor_clearing_tasks(self, initial_state: State) -> None:
+        """
+        For each deco box blocking a corridor (only 1 free non-wall neighbor),
+        inject a clearing task at the FRONT of the matching color group's queue.
+        Also inject tasks for any real boxes that block the deco box's only exit.
+        """
+        assert self.profile is not None
+        num_rows = len(State.walls)
+        num_cols = len(State.walls[0]) if num_rows > 0 else 0
+
+        for obs_r, obs_c, obs_char in self.profile.deco_boxes:
+            obs_color = State.box_colors[ord(obs_char) - ord("A")]
+            clear_goal = self._find_obs_clear_goal(obs_r, obs_c, initial_state)
+            if clear_goal == (obs_r, obs_c):
+                continue  # no free neighbor, skip
+
+            def _inject_blocker(br: int, bc: int, label: str) -> None:
+                blocker_char = initial_state.boxes[br][bc]
+                if not blocker_char:
+                    return
+                blocker_color = State.box_colors[ord(blocker_char) - ord("A")]
+                blocker_goal = self._find_obs_clear_goal(br, bc, initial_state)
+                if blocker_goal == (br, bc):
+                    return
+                pre_task = Task(
+                    task_type="move_box",
+                    object_pos=(br, bc),
+                    goal_pos=blocker_goal,
+                    box_char=blocker_char,
+                    crucial=False,
+                )
+                if blocker_color in self.color_tasks:
+                    self.color_tasks[blocker_color]["future_box_tasks"].appendleft(pre_task)
+                    print(
+                        f"  Corridor {label}: {blocker_char} ({br},{bc}) → {blocker_goal}",
+                        file=sys.stderr, flush=True,
+                    )
+
+            # Determine FIRST-STEP push direction (clear_goal may be multi-step away)
+            if clear_goal[0] != obs_r:
+                first_dr = 1 if clear_goal[0] > obs_r else -1
+                first_dc = 0
+            else:
+                first_dr = 0
+                first_dc = 1 if clear_goal[1] > obs_c else -1
+
+            # First step destination of the push — if blocked by a box, inject pre-clear
+            first_dest_r = obs_r + first_dr
+            first_dest_c = obs_c + first_dc
+            if (
+                0 <= first_dest_r < num_rows and 0 <= first_dest_c < num_cols
+                and initial_state.boxes[first_dest_r][first_dest_c] != ""
+            ):
+                _inject_blocker(first_dest_r, first_dest_c, "path-pre-clear")
+
+            # Initial push-from cell — if blocked by a box, inject pre-clear
+            push_from_r = obs_r - first_dr
+            push_from_c = obs_c - first_dc
+            if (
+                0 <= push_from_r < num_rows and 0 <= push_from_c < num_cols
+                and not State.walls[push_from_r][push_from_c]
+                and initial_state.boxes[push_from_r][push_from_c] != ""
+            ):
+                _inject_blocker(push_from_r, push_from_c, "pushfrom-pre-clear")
+
+            # Inject the deco box clearing task at front of queue
+            clear_task = Task(
+                task_type="move_box",
+                object_pos=(obs_r, obs_c),
+                goal_pos=clear_goal,
+                box_char=obs_char,
+                crucial=False,
+            )
+            if obs_color in self.color_tasks:
+                self.color_tasks[obs_color]["future_box_tasks"].appendleft(clear_task)
+                print(
+                    f"  Corridor clear injected: {obs_char} ({obs_r},{obs_c}) → {clear_goal}",
+                    file=sys.stderr, flush=True,
+                )
+
     def _sync_agent_task_state(self, agent_id: int, task: Task) -> None:
         """
         Keep the Agent's internal task/goal fields aligned with the manager task.
@@ -264,9 +465,25 @@ class Manager:
 
         if color_bucket is not None:
             if color_bucket["future_box_tasks"]:
-                task = color_bucket["future_box_tasks"].popleft()
-                return task
-            elif color_bucket["future_agent_tasks"]:
+                # Find the first non-deferred task (skip chokepoint-deferred ones)
+                tasks_queue = color_bucket["future_box_tasks"]
+                idx_to_pop = None
+                for i, t in enumerate(tasks_queue):
+                    if not self._chokepoint_blockers_pending(t):
+                        idx_to_pop = i
+                        break
+                if idx_to_pop is not None:
+                    if idx_to_pop == 0:
+                        task = tasks_queue.popleft()
+                    else:
+                        task = tasks_queue[idx_to_pop]
+                        del tasks_queue[idx_to_pop]
+                    return task
+                else:
+                    # All box tasks are chokepoint-deferred — skip to agent goals
+                    pass
+
+            if color_bucket["future_agent_tasks"]:
                 for idx, task in enumerate(
                     self.color_tasks[agent_color]["solved_tasks"]
                 ):
@@ -316,11 +533,53 @@ class Manager:
         self.agents[agent_id]._plan = []
         self.agents[agent_id]._plan_index = 0
 
+        # If this agent has a positional goal that's no longer satisfied (the
+        # agent moved away from it after marking it solved), re-queue the
+        # move_agent task so it goes back to its goal.
+        if self.profile is not None:
+            ag_color = State.agent_colors[agent_id]
+            ag = self.agents[agent_id]
+            for gr, gc, gid in self.profile.agent_goals:
+                if gid != agent_id:
+                    continue
+                if (ag.agent_row, ag.agent_col) == (gr, gc):
+                    continue  # still at goal — nothing to do
+                # Find a solved move_agent task for this goal and move it back
+                solved_list = self.color_tasks[ag_color]["solved_tasks"]
+                for idx in range(len(solved_list) - 1, -1, -1):
+                    st = solved_list[idx]
+                    if (
+                        st.task_type == "move_agent"
+                        and st.goal_pos == (gr, gc)
+                    ):
+                        ag.has_reached_its_goal = False
+                        self.color_tasks[ag_color]["future_agent_tasks"].append(st)
+                        del solved_list[idx]
+                        print(
+                            f"  Agent {agent_id}: moved away from goal ({gr},{gc}), "
+                            f"re-queuing move_agent task.",
+                            file=sys.stderr, flush=True,
+                        )
+                        break
+
         print(
             f"  Agent {agent_id}: current task solved, moved to solved list.",
             file=sys.stderr,
             flush=True,
         )
+
+        # Unblock any agents waiting for this agent to clear an obstacle
+        for other_id, waiting_for in self.agents_awaiting_other_agent.items():
+            if waiting_for == agent_id:
+                self.agents_awaiting_other_agent[other_id] = None
+                self.agents[other_id].awaiting_cnt = 0
+                self.agents[other_id]._plan = []
+                self.agents[other_id]._plan_index = 0
+                print(
+                    f"  Agent {other_id}: unblocked (Agent {agent_id} completed task).",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
         next_task = self._pop_next_task_for_agent(agent_id)
         if next_task is None:
@@ -492,6 +751,7 @@ class Manager:
                     managed_foreign_to_swap = self._swap_foreign_task_with_obstacle(
                         foreign_agent.agent_id,
                         box_obstacles[0],
+                        joint_state,
                     )
 
                     if managed_foreign_to_swap and foreign_agent.task is not None:
@@ -563,6 +823,25 @@ class Manager:
 
             # NOTE: other edge cases here i guess
 
+            # Refresh the box's actual position from joint_state — it may have moved
+            # since the task was created. Stale object_pos was causing infinite
+            # invalid-action loops.
+            if (
+                current_task.task_type == "move_box"
+                and current_task.box_char is not None
+            ):
+                gr, gc = current_task.goal_pos
+                actual_pos = self._find_box_current_pos(
+                    joint_state, current_task.box_char, gr, gc
+                )
+                if actual_pos is not None and actual_pos != current_task.object_pos:
+                    print(
+                        f"  Agent {agent_id}: box {current_task.box_char} moved from "
+                        f"{current_task.object_pos} to {actual_pos}, refreshing task.",
+                        file=sys.stderr, flush=True,
+                    )
+                    current_task.object_pos = actual_pos
+
             goal_tuple = self._convert_task_to_goal_tuple(current_task)
 
             # NOTE: timestep is set to 0 because solve function is unaware of the concept of time
@@ -588,13 +867,35 @@ class Manager:
                     flush=True,
                 )
                 return True
-            else:
-                print(
-                    f"  Agent {agent_id}: preplan FAILED for task {current_task}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                return False
+
+            # NOTE: agent.replan() fallback disabled — too slow on large levels
+
+            # Both A* and replan failed. Check if goal cell is blocked by another box
+            # and wait for the responsible agent to clear it.
+            if current_task.task_type == "move_box" and self.agents_awaiting_other_agent[agent_id] is None:
+                gr, gc = current_task.goal_pos
+                blocker_char = joint_state.boxes[gr][gc]
+                if blocker_char:
+                    blocker_color = State.box_colors[ord(blocker_char) - ord("A")]
+                    for other in self.agents:
+                        if other.agent_id != agent_id and Color.compatible(
+                            State.agent_colors[other.agent_id], blocker_color
+                        ):
+                            self.agents_awaiting_other_agent[agent_id] = other.agent_id
+                            self.agents[agent_id].awaiting_cnt = 0
+                            print(
+                                f"  Agent {agent_id}: goal cell ({gr},{gc}) has {blocker_char}, waiting for Agent {other.agent_id}.",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                            break
+
+            print(
+                f"  Agent {agent_id}: preplan FAILED for task {current_task}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return False
 
         return False
 
@@ -651,6 +952,13 @@ class Manager:
             for idx, col in enumerate(initial_state.agent_cols)
         ]
         ghost_boxes = [["" for _ in row] for row in initial_state.boxes]
+        # Boxes at their final goal positions are kept as permanent obstacles in
+        # the ghost state — they will not be moved, so paths must go around them.
+        for r in range(len(initial_state.boxes)):
+            for c in range(len(initial_state.boxes[r])):
+                ch = initial_state.boxes[r][c]
+                if ch and State.goals[r][c] == ch:
+                    ghost_boxes[r][c] = ch
         if failed_task.task_type == "move_box" and failed_task.box_char is not None:
             box_r, box_c = failed_task.object_pos
             ghost_boxes[box_r][box_c] = failed_task.box_char
@@ -810,10 +1118,101 @@ class Manager:
 
         return obstacles
 
+    def _find_box_current_pos(
+        self, joint_state: State, box_char: str, goal_r: int, goal_c: int
+    ) -> tuple[int, int] | None:
+        """Find the current (row, col) of the box with the given char that has
+        NOT yet reached the goal. Returns the one closest to the goal if multiple."""
+        candidates: list[tuple[int, int, int]] = []
+        for r, row in enumerate(joint_state.boxes):
+            for c, ch in enumerate(row):
+                if ch == box_char and not (r == goal_r and c == goal_c):
+                    d = abs(r - goal_r) + abs(c - goal_c)
+                    candidates.append((d, r, c))
+        if not candidates:
+            return None
+        candidates.sort()
+        return (candidates[0][1], candidates[0][2])
+
+    def _find_obs_clear_goal(
+        self, obs_r: int, obs_c: int, state: "State | None" = None
+    ) -> tuple[int, int]:
+        """
+        Find the best adjacent cell to push the obstacle box to.
+
+        Priority:
+          1. Adjacent free cell where the push-from cell (opposite side) is also
+             free of walls AND boxes (single-step push immediately feasible).
+          2. Any adjacent free cell (push-from may be blocked; plan handles it reactively).
+
+        "Free" means: not a wall, and (if state given) not occupied by a box.
+        Agents are not considered static obstacles here.
+        """
+        num_rows = len(State.walls)
+        num_cols = len(State.walls[0]) if num_rows > 0 else 0
+
+        def is_free(r: int, c: int) -> bool:
+            if not (0 <= r < num_rows and 0 <= c < num_cols):
+                return False
+            if State.walls[r][c]:
+                return False
+            if state is not None and state.boxes[r][c] != "":
+                return False
+            return True
+
+        # Pass 1: dest free AND push-from free (immediately executable push)
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            dest_r, dest_c = obs_r + dr, obs_c + dc
+            push_from_r, push_from_c = obs_r - dr, obs_c - dc
+            if is_free(dest_r, dest_c) and is_free(push_from_r, push_from_c):
+                return (dest_r, dest_c)
+
+        # Pass 2: BFS through all non-wall cells (including box-occupied ones) to find
+        # the nearest box-FREE cell with ≥3 free cardinal neighbors (a true open space).
+        # This ensures C doesn't end up in another corridor bottleneck.
+        from collections import deque as _dq
+
+        def free_cardinal_count(r: int, c: int) -> int:
+            cnt = 0
+            for dr2, dc2 in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                r2, c2 = r + dr2, c + dc2
+                if 0 <= r2 < num_rows and 0 <= c2 < num_cols and not State.walls[r2][c2]:
+                    cnt += 1
+            return cnt
+
+        bfs_visited: set = {(obs_r, obs_c)}
+        bfs_q: _dq = _dq([(obs_r, obs_c)])
+        any_free: tuple | None = None
+
+        while bfs_q:
+            r, c = bfs_q.popleft()
+            if (r, c) != (obs_r, obs_c) and not State.walls[r][c]:
+                # Only return this cell if it's currently box-free
+                cell_has_box = state is not None and state.boxes[r][c] != ""
+                if not cell_has_box:
+                    if any_free is None:
+                        any_free = (r, c)
+                    if free_cardinal_count(r, c) >= 3:
+                        return (r, c)
+            # Always traverse through (even box-occupied cells) to reach open space beyond
+            for dr, dc in [(1, 0), (0, 1), (0, -1), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if (
+                    (nr, nc) not in bfs_visited
+                    and 0 <= nr < num_rows
+                    and 0 <= nc < num_cols
+                    and not State.walls[nr][nc]
+                ):
+                    bfs_visited.add((nr, nc))
+                    bfs_q.append((nr, nc))
+
+        return any_free if any_free is not None else (obs_r, obs_c)
+
     def _swap_foreign_task_with_obstacle(
         self,
         foreign_agent_id: int,
         obstacle: tuple[int, int, Color, bool, str],
+        state: "State | None" = None,
     ) -> bool:
         """
         Swap the task of a foreign agent with an obstacle task if possible.
@@ -827,15 +1226,56 @@ class Manager:
         obs_r, obs_c, obs_color, obstacle_after_box, obstacle_type = obstacle
 
         current_task = self.agents[foreign_agent_id].task
+        box_char = State.get_box_char_from_color(obs_color)
 
+        # If the obstacle box is at its FINAL goal position, refuse to move it.
+        # The blocked agent must find another path.
+        if (
+            box_char is not None
+            and 0 <= obs_r < len(State.goals)
+            and 0 <= obs_c < len(State.goals[obs_r])
+            and State.goals[obs_r][obs_c] == box_char
+        ):
+            print(
+                f"  Foreign Agent {foreign_agent_id}: box {box_char} at ({obs_r},{obs_c}) "
+                f"is at its final goal — refusing to move.",
+                file=sys.stderr, flush=True,
+            )
+            return False
+
+        # If foreign agent already has a task to move this obstacle box, don't swap —
+        # just let the requesting agent wait for it.
+        if (
+            current_task is not None
+            and current_task.task_type == "move_box"
+            and current_task.box_char is not None
+            and current_task.object_pos == (obs_r, obs_c)
+        ):
+            print(
+                f"  Foreign Agent {foreign_agent_id}: already working on obstacle at ({obs_r},{obs_c}), skip swap.",
+                file=sys.stderr, flush=True,
+            )
+            return True  # treat as success so awaiting gets set
+
+        # Prevent infinite oscillation: cap how many times a box gets swap-cleared
+        if box_char is not None:
+            count = self.box_swap_count.get(box_char, 0)
+            if count >= 5:
+                print(
+                    f"  Foreign Agent {foreign_agent_id}: box {box_char} swap-cleared "
+                    f"{count} times already, refusing further swaps.",
+                    file=sys.stderr, flush=True,
+                )
+                return False
+            self.box_swap_count[box_char] = count + 1
+
+        clear_goal = self._find_obs_clear_goal(obs_r, obs_c, state)
+        box_char = State.get_box_char_from_color(obs_color)
         new_task = Task(
             task_type="move_box",
             object_pos=(obs_r, obs_c),
-            goal_pos=(
-                self.agents[foreign_agent_id].agent_row,
-                self.agents[foreign_agent_id].agent_col,
-            ),
-            box_char=State.get_box_char_from_color(obs_color),
+            goal_pos=clear_goal,
+            box_char=box_char,
         )
 
         # if (
@@ -1204,23 +1644,47 @@ class Manager:
         )
 
         if not is_valid:
-            """
-            1. set joint action to all noops
-            2. clear all agent plans (to force replanning in next turn, which may resolve conflicts)
-                - maybe only clear plans of agents involved in the invalid action? but that requires more complex logic to determine which agents are involved in the invalidity
-            """
+            # CBS-style conflict resolution: for each invalid agent, inject a
+            # space-time constraint on the cell they tried to enter so the next
+            # replan finds a different route. This breaks the infinite loop of
+            # "find same plan → fail validation → clear → find same plan".
             joint_action = [
                 action if agent.agent_id not in invalid_agents else Action.NoOp
                 for agent, action in zip(self.agents, joint_action, strict=True)
             ]
-            for agent_id in invalid_agents:
-                agent = self.agents[agent_id]
+            for aid in invalid_agents:
+                agent = self.agents[aid]
+                # Compute the cell the agent was trying to enter
+                bad_action = joint_action[aid] if aid not in invalid_agents else None
+                # Use the action they attempted (before we set to NoOp)
+                attempted_actions = list(joint_action)
+                # Recompute attempted destination from agent's _plan
+                if agent._plan_index > 0 and agent._plan_index - 1 < len(agent._plan):
+                    attempted = agent._plan[agent._plan_index - 1]
+                    ar = joint_state.agent_rows[aid]
+                    ac = joint_state.agent_cols[aid]
+                    if attempted.type is ActionType.Move:
+                        bad_r = ar + attempted.agent_row_delta
+                        bad_c = ac + attempted.agent_col_delta
+                        agent.constraints.add((bad_r, bad_c, 0))
+                    elif attempted.type is ActionType.Push:
+                        # Box destination
+                        br = ar + attempted.agent_row_delta
+                        bc = ac + attempted.agent_col_delta
+                        bdr = br + attempted.box_row_delta
+                        bdc = bc + attempted.box_col_delta
+                        agent.constraints.add((bdr, bdc, 0))
+                        agent.constraints.add((br, bc, 0))
+                    elif attempted.type is ActionType.Pull:
+                        nr = ar + attempted.agent_row_delta
+                        nc = ac + attempted.agent_col_delta
+                        agent.constraints.add((nr, nc, 0))
+                # Clear plan to force replan with new constraint
                 agent._plan = []
                 agent._plan_index = 0
-            # joint_action = [Action.NoOp for _ in self.agents]
-            # for agent in self.agents:
-            #     agent._plan = []
-            #     agent._plan_index = 0
+                # Cap constraint set size to avoid unbounded growth
+                if len(agent.constraints) > 200:
+                    agent.constraints = set(list(agent.constraints)[-100:])
 
         self.timestep += 1
         return joint_action
