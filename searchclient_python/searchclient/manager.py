@@ -9,8 +9,10 @@ Architecture:
 
 from __future__ import annotations
 
+import heapq
 import random
 from collections import deque
+from dataclasses import dataclass, field
 import sys
 from typing import TYPE_CHECKING, TypedDict
 
@@ -27,10 +29,36 @@ if TYPE_CHECKING:
     pass
 
 
+# Joint A* state-space caps (scaled by agent count)
+_JOINT_MAX_CLOSED_2  = 1_000_000   # 2-agent levels
+_JOINT_MAX_CLOSED_3  = 500_000     # 3-agent levels
+_JOINT_MAX_CLOSED    = 300_000     # 4+ agent levels (rarely used)
+
+
+@dataclass(order=True)
+class _JNode:
+    """Joint A* node — searches in the joint state space across all agents."""
+    f:      int
+    g:      int               = field(compare=False)
+    state:  State             = field(compare=False)
+    parent: "_JNode | None"   = field(compare=False, default=None)
+
+
 class ColorTasksTypedDict(TypedDict):
     future_box_tasks: deque[Task]
     future_agent_tasks: deque[Task]
     solved_tasks: deque[Task]
+
+
+def _apply_agent_plan(state: State, agent_id: int, plan: list[Action]) -> State:
+    """Apply a single-agent plan to the joint state (other agents stay put)."""
+    current = state
+    num_agents = len(state.agent_rows)
+    for action in plan:
+        joint = [Action.NoOp] * num_agents
+        joint[agent_id] = action
+        current = current.result(joint)
+    return current
 
 
 class Manager:
@@ -47,6 +75,10 @@ class Manager:
         self.agents_no_plan_cnt: dict[int, int] = {}
         # Track how many times each box has been swap-cleared to prevent infinite oscillation
         self.box_swap_count: dict[str, int] = {}
+        # Rolling history of joint-state hashes for cycle detection.
+        # When the same hash appears N+ times in the window, we're in a deadlock.
+        self._state_history: deque = deque(maxlen=30)
+        self._deadlock_resolved_at: int = -1  # last timestep we triggered recovery
         # Chokepoint goals: {(goal_r, goal_c): set[agent_ids_that_need_to_pass_through]}
         # Delivering a box here is deferred until those agents reach their goals.
         self.chokepoint_goals: dict[tuple[int, int], set[int]] = {}
@@ -82,8 +114,17 @@ class Manager:
         for agent in self.agents:
             agent_color = State.agent_colors[agent.agent_id]
             if agent_color not in self.color_tasks:
-                # self.color_tasks[agent_color] = {"future": deque(), "current": deque()}
                 self.color_tasks[agent_color] = ColorTasksTypedDict(
+                    future_box_tasks=deque(),
+                    future_agent_tasks=deque(),
+                    solved_tasks=deque(),
+                )
+        # Also initialize for any box color that doesn't match an agent color —
+        # otherwise _build_box_goal_tasks crashes with KeyError.
+        for _, _, ch in profile.box_goals:
+            box_color = State.box_colors[ord(ch) - ord("A")] if ch.isupper() else None
+            if box_color is not None and box_color not in self.color_tasks:
+                self.color_tasks[box_color] = ColorTasksTypedDict(
                     future_box_tasks=deque(),
                     future_agent_tasks=deque(),
                     solved_tasks=deque(),
@@ -97,23 +138,216 @@ class Manager:
         print("Building agent goal tasks...", file=sys.stderr, flush=True)
         self._build_agent_goal_tasks(initial_state)
 
+        # Size-based gating: very large levels can take minutes to preprocess.
+        n_cells = profile.num_rows * profile.num_cols
+        big_level = n_cells > 2000 and profile.num_agents > 8
+        very_big_level = n_cells > 3000 or profile.num_agents > 10
+
+        # ──────────────────────────────────────────────────────────────────
+        # FAST PATH: try Hungarian + HCA* FIRST. If it produces a complete
+        # joint plan, use that and skip the rest of the pipeline.
+        # ──────────────────────────────────────────────────────────────────
+        if not very_big_level and self._try_hungarian_hca_fast_path(initial_state):
+            print("Fast path succeeded — using Hungarian + HCA* plans.", file=sys.stderr, flush=True)
+            return
+
+        # Fast path didn't get all agents — reset and run our reactive pipeline
+        for agent in self.agents:
+            agent._plan = []
+            agent._plan_index = 0
+            agent.tasks = []
+            agent.constraints = set()
+
         # Step 1c: Pre-inject corridor-clearing tasks for deco boxes that block passages
-        self._inject_corridor_clearing_tasks(initial_state)
+        if not very_big_level:
+            self._inject_corridor_clearing_tasks(initial_state)
+        else:
+            print("  Skipping corridor pre-clearing (very large level).", file=sys.stderr, flush=True)
 
         # Step 1d: Compute box-goal chokepoints — box deliveries that would
         # block another agent's path to its agent-goal.
-        self._compute_chokepoints(initial_state)
+        if not big_level:
+            self._compute_chokepoints(initial_state)
+        else:
+            print("  Skipping chokepoint analysis (large level).", file=sys.stderr, flush=True)
 
         # Step 1e: CBS preplanning — find a conflict-free joint plan for the
         # first task of each agent. Subsequent tasks are handled reactively.
-        print("Running CBS preplanning...", file=sys.stderr, flush=True)
-        self._cbs_preplan(initial_state)
+        if not very_big_level:
+            print("Running CBS preplanning...", file=sys.stderr, flush=True)
+            self._cbs_preplan(initial_state)
+        else:
+            print("  Skipping CBS preplan (very large level).", file=sys.stderr, flush=True)
+
+        # Step 1f: Hungarian assignment + HCA* preplan (ported from felix).
+        # Populates agent.tasks per-agent and tries to plan full task sequences
+        # cooperatively. Only used if our reactive system needs the help.
+        if not very_big_level:
+            try:
+                self._hungarian_and_hca(initial_state)
+            except Exception as e:
+                import traceback
+                print(f"  HCA* preplan errored ({e}); falling back to reactive.", file=sys.stderr, flush=True)
+                traceback.print_exc(file=sys.stderr)
+
+        # Step 1g: Joint A* — for small levels (≤2 agents, ≤450 cells), try the
+        # optimal joint state-space search. If it succeeds, we use that plan
+        # instead of the reactive system.
+        self._joint_plan: list[list[Action]] = []
+        n_cells = profile.num_rows * profile.num_cols
+        if profile.num_agents <= 2 and n_cells <= 450:
+            print(
+                f"Trying Joint A* (small level: {profile.num_agents} agents, {n_cells} cells).",
+                file=sys.stderr, flush=True,
+            )
+            joint_actions = self._joint_astar_plan(initial_state)
+            if joint_actions is not None:
+                self._joint_plan = joint_actions
+                print(
+                    f"Joint A* found plan of length {len(joint_actions)}.",
+                    file=sys.stderr, flush=True,
+                )
+
+    def _try_hungarian_hca_fast_path(self, initial_state: State) -> bool:
+        """FAST PATH: try Hungarian + HCA* + Joint A* before our reactive pipeline.
+        Returns True if every agent that has a goal has a plan. Otherwise resets
+        all agent state to clean and returns False so the reactive pipeline runs."""
+        from searchclient.planner.hungarian import assign, agent_goals_assign, subgoal_order
+
+        if self.profile is None or self.dist_map is None:
+            return False
+
+        # Assign boxes to agents (Hungarian)
+        box_assignment = assign(
+            agents=self.agents,
+            boxes=self.profile.real_boxes,
+            goals=self.profile.box_goals,
+            dist_map=self.dist_map,
+        )
+        agent_rows0 = initial_state.agent_rows
+        agent_cols0 = initial_state.agent_cols
+        for agent in self.agents:
+            tasks = box_assignment.get(agent.agent_id, [])
+            if len(tasks) > 1:
+                tasks = subgoal_order(
+                    tasks, self.dist_map,
+                    start_r=agent_rows0[agent.agent_id],
+                    start_c=agent_cols0[agent.agent_id],
+                )
+            agent.tasks = tasks
+
+        # Assign positional goals
+        ag_goals = agent_goals_assign(self.agents, self.profile.agent_goals)
+        for agent in self.agents:
+            agent.agent_goal = ag_goals.get(agent.agent_id)
+
+        # Run HCA* two-pass
+        try:
+            self._hca_preplan(initial_state)
+        except Exception as e:
+            print(f"  Fast path HCA* errored: {e}", file=sys.stderr, flush=True)
+            return False
+
+        # For small levels (≤2 agents), try Joint A* on agents without HCA* plans
+        n_cells = self.profile.num_rows * self.profile.num_cols
+        if self.profile.num_agents <= 2 and n_cells <= 450:
+            joint_actions = self._joint_astar_plan(initial_state)
+            if joint_actions is not None:
+                self._joint_plan = joint_actions
+                return True  # Joint plan handles everything
+
+        # Verify: every agent with a goal (box task or positional) has a plan
+        for agent in self.agents:
+            has_goal = getattr(agent, "tasks", None) or agent.agent_goal is not None
+            if has_goal and not agent._plan:
+                # An agent isn't planned — fast path failed
+                return False
+
+        return True
+
+    def _hungarian_and_hca(self, initial_state: State) -> None:
+        """Run Hungarian box assignment + subgoal ordering, populate agent.tasks
+        for each agent, then run HCA* two-pass preplan."""
+        from searchclient.planner.hungarian import assign, agent_goals_assign, subgoal_order
+
+        if self.profile is None or self.dist_map is None:
+            return
+
+        box_assignment = assign(
+            agents=self.agents,
+            boxes=self.profile.real_boxes,
+            goals=self.profile.box_goals,
+            dist_map=self.dist_map,
+        )
+
+        agent_rows0 = initial_state.agent_rows
+        agent_cols0 = initial_state.agent_cols
+        any_plan_existed = any(a._plan for a in self.agents)
+
+        for agent in self.agents:
+            tasks = box_assignment.get(agent.agent_id, [])
+            if len(tasks) > 1:
+                tasks = subgoal_order(
+                    tasks, self.dist_map,
+                    start_r=agent_rows0[agent.agent_id],
+                    start_c=agent_cols0[agent.agent_id],
+                )
+            agent.tasks = tasks
+
+        ag_goals = agent_goals_assign(self.agents, self.profile.agent_goals)
+        for agent in self.agents:
+            if agent.agent_goal is None:
+                agent.agent_goal = ag_goals.get(agent.agent_id)
+
+        # Run HCA* only on agents that:
+        #   (a) don't already have a CBS plan, AND
+        #   (b) have NO pending tasks in their color queue (otherwise HCA* would
+        #       skip our chokepoint/corridor logic by assigning a stale plan).
+        def has_pending_color_tasks(aid: int) -> bool:
+            ac = State.agent_colors[aid]
+            bucket = self.color_tasks.get(ac)
+            if bucket is None:
+                return False
+            return bool(bucket["future_box_tasks"]) or bool(bucket["future_agent_tasks"])
+
+        unplanned = [
+            a for a in self.agents
+            if not a._plan
+            and (getattr(a, "tasks", None) or a.agent_goal is not None)
+            and not has_pending_color_tasks(a.agent_id)
+        ]
+        if not unplanned:
+            return
 
         print(
-            f"Manager setup complete: {profile.num_agents} agents ready.",
-            file=sys.stderr,
-            flush=True,
+            f"Running HCA* preplan for {len(unplanned)} agent(s)...",
+            file=sys.stderr, flush=True,
         )
+
+        # Register planned agents' trajectories as constraints for unplanned ones
+        for agent in self.agents:
+            if agent._plan:
+                ar = initial_state.agent_rows[agent.agent_id]
+                ac = initial_state.agent_cols[agent.agent_id]
+                box_r, box_c = -1, -1
+                if getattr(agent, "tasks", None):
+                    t0 = agent.tasks[0]
+                    if len(t0) >= 5:
+                        br, bc = agent._find_box(initial_state, t0[4], t0[2], t0[3])
+                        if br is not None:
+                            box_r, box_c = br, bc
+                for other in unplanned:
+                    self._register_agent_path_one(ar, ac, box_r, box_c, agent._plan, other)
+
+        for agent in unplanned:
+            full_plan, success = self._plan_all_tasks(agent, initial_state, 0)
+            if success and full_plan:
+                agent._plan = full_plan
+                agent._plan_index = 0
+                print(
+                    f"  HCA* recovered Agent {agent.agent_id} (plan length {len(full_plan)}).",
+                    file=sys.stderr, flush=True,
+                )
 
     def _compute_chokepoints(self, initial_state: State) -> None:
         """
@@ -164,6 +398,40 @@ class Manager:
                         file=sys.stderr, flush=True,
                     )
 
+        # Box-blocks-box chokepoint: delivering box X to its goal cell might
+        # disconnect another box Y from its goal path. We use a sentinel
+        # negative agent_id (-(box_index + 1)) to track these box-deliveries
+        # that must happen first before this chokepoint is "open."
+        self.box_chokepoint_blockers: dict[tuple[int, int], set[tuple[int, int, str]]] = {}
+        # For each box goal cell A, check: does treating A as wall make
+        # any OTHER box's start→goal path unreachable?
+        for goal_a_r, goal_a_c, _ in self.profile.box_goals:
+            for box_b in self.profile.real_boxes:
+                box_b_r, box_b_c, box_b_char = box_b
+                # Find the matching goal for this box
+                target_b = None
+                for gbr, gbc, gbch in self.profile.box_goals:
+                    if gbch == box_b_char and (gbr, gbc) != (goal_a_r, goal_a_c):
+                        target_b = (gbr, gbc)
+                        break
+                if target_b is None:
+                    continue
+                # Box must be able to reach its goal in the open map
+                reachable_open = bfs_reachable((box_b_r, box_b_c), (-1, -1))
+                if target_b not in reachable_open:
+                    continue
+                # If we close goal_a, can box B still reach its goal?
+                reachable_closed = bfs_reachable((box_b_r, box_b_c), (goal_a_r, goal_a_c))
+                if target_b not in reachable_closed:
+                    self.box_chokepoint_blockers.setdefault(
+                        (goal_a_r, goal_a_c), set()
+                    ).add((box_b_r, box_b_c, box_b_char))
+                    print(
+                        f"  Box-chokepoint: delivering to ({goal_a_r},{goal_a_c}) blocks "
+                        f"box {box_b_char} delivery. Will defer.",
+                        file=sys.stderr, flush=True,
+                    )
+
     def _chokepoint_blockers_pending(self, task: Task) -> bool:
         """Return True if delivering this box-task would block agents whose
         positional goals are not yet satisfied."""
@@ -175,7 +443,6 @@ class Manager:
         for aid in blocked_agents:
             ag = self.agents[aid]
             if not ag.has_reached_its_goal:
-                # check current position vs final agent goal
                 for gr, gc, gid in (self.profile.agent_goals if self.profile else []):
                     if gid == aid and (ag.agent_row, ag.agent_col) != (gr, gc):
                         return True
@@ -740,13 +1007,20 @@ class Manager:
                 #     flush=True,
                 # )
                 foreign_agent = next(
-                    agent
-                    for agent in self.agents
-                    if agent.agent_id != agent_id
-                    and State.agent_colors[agent.agent_id] == box_obstacles[0][2]
+                    (
+                        agent
+                        for agent in self.agents
+                        if agent.agent_id != agent_id
+                        and State.agent_colors[agent.agent_id] == box_obstacles[0][2]
+                    ),
+                    None,
                 )
-
-                if self.agents_awaiting_other_agent[agent_id] is None:
+                if foreign_agent is None:
+                    print(
+                        f"  Agent {agent_id}: no foreign agent of color {box_obstacles[0][2]} exists, skipping swap.",
+                        file=sys.stderr, flush=True,
+                    )
+                elif self.agents_awaiting_other_agent[agent_id] is None:
 
                     managed_foreign_to_swap = self._swap_foreign_task_with_obstacle(
                         foreign_agent.agent_id,
@@ -1591,6 +1865,13 @@ class Manager:
         """
         self._sync_agent_positions(joint_state)
 
+        # Joint A* fast-path: if Joint A* found a complete plan at setup,
+        # just pop the next joint action.
+        if self._joint_plan:
+            joint_action = self._joint_plan.pop(0)
+            self.timestep += 1
+            return joint_action
+
         # BDI-style task completion handling: move solved tasks aside, then
         # assign and replan if another task is available.
         t = self.timestep
@@ -1686,8 +1967,72 @@ class Manager:
                 if len(agent.constraints) > 200:
                     agent.constraints = set(list(agent.constraints)[-100:])
 
+        # Deadlock detection — if we see the same joint state cycling N+ times,
+        # trigger recovery: assign escape cells, clear plans, drop awaiting flags.
+        self._detect_and_resolve_deadlock(joint_state)
+
+        # Periodic constraint pruning to keep A* fast on long runs.
+        if self.timestep % 50 == 0 and self.timestep > 0:
+            for agent in self.agents:
+                agent.clear_old_constraints(self.timestep)
+                if len(agent.constraints) > 300:
+                    agent.constraints = set(list(agent.constraints)[-150:])
+
         self.timestep += 1
         return joint_action
+
+    def _detect_and_resolve_deadlock(self, joint_state: State) -> None:
+        """Track recent joint states; if cycling detected, force recovery."""
+        # Build a compact signature of agent + box positions
+        sig = (
+            tuple(joint_state.agent_rows),
+            tuple(joint_state.agent_cols),
+            tuple(tuple(row) for row in joint_state.boxes),
+        )
+        self._state_history.append(sig)
+
+        # Cooldown — don't re-trigger every turn
+        if self.timestep - self._deadlock_resolved_at < 15:
+            return
+
+        # Count occurrences of current sig in the rolling window
+        if len(self._state_history) < 12:
+            return
+        occurrences = sum(1 for s in self._state_history if s == sig)
+        if occurrences < 4:
+            return  # not enough repetition to be a cycle
+
+        # We're cycling. Recovery: pick worst-stuck agents (no plan, not at goal),
+        # assign each an escape cell, clear their constraints and awaiting flags.
+        print(
+            f"  Deadlock detected at t={self.timestep} (state seen {occurrences}x). Triggering recovery.",
+            file=sys.stderr, flush=True,
+        )
+        self._deadlock_resolved_at = self.timestep
+
+        stuck = []
+        for agent in self.agents:
+            has_goal = agent.task is not None or agent.agent_goal is not None or getattr(agent, "tasks", None)
+            if has_goal and not agent._plan:
+                stuck.append(agent)
+
+        for agent in stuck[:3]:  # only force-escape up to 3 agents to avoid chaos
+            escape = self._find_escape_cell(joint_state, agent.agent_id)
+            if escape is None:
+                continue
+            print(
+                f"    Agent {agent.agent_id}: forced escape to {escape}.",
+                file=sys.stderr, flush=True,
+            )
+            # Save current positional goal if any, restore after escape
+            if agent.agent_goal is not None:
+                agent._pending_agent_goal = agent.agent_goal
+            agent.agent_goal = escape
+            agent.constraints = set()  # drop stale constraints
+            agent._plan = []
+            agent._plan_index = 0
+            self.agents_awaiting_other_agent[agent.agent_id] = None
+            agent.awaiting_cnt = 0
 
     def _get_random_valid_move(
         self, joint_state: State, agent_id: int
@@ -1717,6 +2062,356 @@ class Manager:
 
     def is_done(self, joint_state: State) -> bool:
         return joint_state.is_goal_state()
+
+    # ------------------------------------------------------------------
+    # HCA* — Hierarchical Cooperative A* (ported from felix/structure)
+    # ------------------------------------------------------------------
+
+    def _hca_preplan(self, initial_state: State) -> None:
+        """Two-pass HCA*. Pass 1: plan ALL tasks per agent in priority order.
+        Each agent's full trajectory becomes constraints for lower-priority agents.
+        Pass 2: retry failed agents with projected-state (other boxes removed)."""
+        # ---- Pass 1 ----
+        for agent in self.agents:
+            if not getattr(agent, "tasks", None):
+                if agent.agent_goal is not None:
+                    gr, gc = agent.agent_goal
+                    plan = solve(
+                        state=initial_state,
+                        agent_id=agent.agent_id,
+                        goal=(None, None, gr, gc),
+                        constraints=agent.constraints,
+                        dist_map=self.dist_map,
+                    )
+                    if plan:
+                        agent._plan = plan
+                        agent._plan_index = 0
+                        self._register_agent_path(
+                            agent, initial_state,
+                            initial_state.agent_rows[agent.agent_id],
+                            initial_state.agent_cols[agent.agent_id],
+                            -1, -1, plan,
+                        )
+                continue
+
+            full_plan, success = self._plan_all_tasks(agent, initial_state, 0)
+            if not success or not full_plan:
+                print(
+                    f"  HCA* pass 1: Agent {agent.agent_id} FAILED.",
+                    file=sys.stderr, flush=True,
+                )
+                continue
+
+            agent._plan = full_plan
+            agent._plan_index = 0
+            task0 = agent.tasks[0]
+            box_r0, box_c0 = agent._find_box(initial_state, task0[4], task0[2], task0[3])
+            if box_r0 is None:
+                box_r0, box_c0 = -1, -1
+            self._register_agent_path(
+                agent, initial_state,
+                initial_state.agent_rows[agent.agent_id],
+                initial_state.agent_cols[agent.agent_id],
+                box_r0, box_c0, full_plan,
+            )
+
+        # ---- Pass 2 ----
+        self._hca_retry_failed(initial_state)
+
+    def _plan_all_tasks(
+        self, agent: Agent, initial_state: State, t_base_offset: int
+    ) -> tuple[list[Action], bool]:
+        """Plan all of an agent's tasks sequentially, chaining simulated states.
+        Also chains agent_goal navigation when ≤1 box task."""
+        full_plan: list[Action] = []
+        current_state = initial_state
+        t_offset = t_base_offset
+
+        for task in agent.tasks:
+            goal_r, goal_c, box_char = task[2], task[3], task[4]
+            box_r, box_c = agent._find_box(current_state, box_char, goal_r, goal_c)
+            if box_r is None:
+                continue
+            shifted = {(r, c, t - t_offset) for r, c, t in agent.constraints if t >= t_offset}
+            task_plan = solve(
+                state=current_state,
+                agent_id=agent.agent_id,
+                goal=(box_r, box_c, goal_r, goal_c, box_char),
+                constraints=shifted,
+                dist_map=self.dist_map,
+            )
+            if task_plan is None:
+                return full_plan, False
+            full_plan.extend(task_plan)
+            t_offset += len(task_plan)
+            current_state = _apply_agent_plan(current_state, agent.agent_id, task_plan)
+
+        # Chain nav to agent_goal if exactly ≤1 box task
+        if agent.agent_goal is not None and len(agent.tasks) <= 1:
+            gr, gc = agent.agent_goal
+            ar = current_state.agent_rows[agent.agent_id]
+            ac = current_state.agent_cols[agent.agent_id]
+            if not (ar == gr and ac == gc):
+                shifted = {(r, c, t - t_offset) for r, c, t in agent.constraints if t >= t_offset}
+                nav_plan = solve(
+                    state=current_state,
+                    agent_id=agent.agent_id,
+                    goal=(None, None, gr, gc),
+                    constraints=shifted,
+                    dist_map=self.dist_map,
+                )
+                if nav_plan is None:
+                    return full_plan, False
+                full_plan.extend(nav_plan)
+
+        return full_plan, True
+
+    def _register_agent_path_one(
+        self, ar: int, ac: int, bxr: int, bxc: int,
+        plan: list[Action], target_agent: Agent,
+    ) -> None:
+        """Register a single agent's trajectory as constraints for ONE target agent."""
+        prev_ar, prev_ac = ar, ac
+        for t, action in enumerate(plan):
+            target_agent.constraints.add((ar, ac, t))
+            if bxr >= 0:
+                target_agent.constraints.add((bxr, bxc, t))
+            if t > 0:
+                target_agent.constraints.add((prev_ar, prev_ac, t))
+            prev_ar, prev_ac = ar, ac
+            if action.type is ActionType.Move:
+                ar += action.agent_row_delta
+                ac += action.agent_col_delta
+            elif action.type is ActionType.Push:
+                new_bxr = bxr + action.box_row_delta
+                new_bxc = bxc + action.box_col_delta
+                ar, ac = bxr, bxc
+                bxr, bxc = new_bxr, new_bxc
+            elif action.type is ActionType.Pull:
+                new_bxr, new_bxc = ar, ac
+                ar = ar + action.agent_row_delta
+                ac = ac + action.agent_col_delta
+                bxr, bxc = new_bxr, new_bxc
+        target_agent.constraints.add((ar, ac, len(plan)))
+        if bxr >= 0:
+            target_agent.constraints.add((bxr, bxc, len(plan)))
+
+    def _register_agent_path(
+        self, agent: Agent, state: State, ar: int, ac: int,
+        bxr: int, bxc: int, plan: list[Action],
+    ) -> None:
+        """Add time-indexed agent and box positions as constraints for
+        all lower-priority agents (agent_id > this agent's id)."""
+        lower = [a for a in self.agents if a.agent_id > agent.agent_id]
+        prev_ar, prev_ac = ar, ac
+        for t, action in enumerate(plan):
+            for other in lower:
+                other.constraints.add((ar, ac, t))
+                if bxr >= 0:
+                    other.constraints.add((bxr, bxc, t))
+                if t > 0:
+                    other.constraints.add((prev_ar, prev_ac, t))
+            prev_ar, prev_ac = ar, ac
+            if action.type is ActionType.Move:
+                ar += action.agent_row_delta
+                ac += action.agent_col_delta
+            elif action.type is ActionType.Push:
+                new_bxr = bxr + action.box_row_delta
+                new_bxc = bxc + action.box_col_delta
+                ar, ac = bxr, bxc
+                bxr, bxc = new_bxr, new_bxc
+            elif action.type is ActionType.Pull:
+                new_bxr, new_bxc = ar, ac
+                ar = ar + action.agent_row_delta
+                ac = ac + action.agent_col_delta
+                bxr, bxc = new_bxr, new_bxc
+        for other in lower:
+            other.constraints.add((ar, ac, len(plan)))
+            if bxr >= 0:
+                other.constraints.add((bxr, bxc, len(plan)))
+
+    def _hca_retry_failed(self, initial_state: State) -> None:
+        """Pass 2 of HCA*: retry agents that failed pass 1, using a projected
+        state where other agents' boxes are REMOVED."""
+        needs_retry = [
+            a for a in self.agents
+            if (a.tasks or a.agent_goal is not None) and not a._plan
+        ]
+        if not needs_retry:
+            return
+
+        for agent in needs_retry:
+            proj_boxes = [row[:] for row in initial_state.boxes]
+            for other in self.agents:
+                if other.agent_id == agent.agent_id:
+                    continue
+                if not other._plan or not getattr(other, "tasks", None):
+                    continue
+                other_task = other.tasks[0]
+                o_goal_r, o_goal_c, o_char = other_task[2], other_task[3], other_task[4]
+                o_box_r, o_box_c = agent._find_box(initial_state, o_char, o_goal_r, o_goal_c)
+                if o_box_r is not None and 0 <= o_box_r < len(proj_boxes):
+                    proj_boxes[o_box_r][o_box_c] = ""
+
+            proj_state = State(initial_state.agent_rows[:], initial_state.agent_cols[:], proj_boxes)
+            full_plan, success = self._plan_all_tasks(agent, proj_state, 0)
+            if success and full_plan:
+                agent._plan = full_plan
+                agent._plan_index = 0
+                print(
+                    f"  HCA* pass 2: Agent {agent.agent_id} succeeded (length {len(full_plan)}).",
+                    file=sys.stderr, flush=True,
+                )
+
+    # ------------------------------------------------------------------
+    # Joint A* (ported from felix/structure — optimal for ≤2 agent levels)
+    # ------------------------------------------------------------------
+
+    def _joint_astar_plan(self, initial_state: State) -> list[list[Action]] | None:
+        """A* over the joint state space — optimal but only tractable for small levels."""
+        assert self.profile is not None
+        n_agents = self.profile.num_agents
+        max_closed = (
+            _JOINT_MAX_CLOSED_2 if n_agents <= 2
+            else _JOINT_MAX_CLOSED_3 if n_agents <= 3
+            else _JOINT_MAX_CLOSED
+        )
+
+        h0 = self._joint_h(initial_state)
+        if h0 >= max_closed:
+            return None
+
+        start = _JNode(f=h0, g=0, state=initial_state)
+        heap: list[tuple] = [(h0, 0, start)]
+        closed: set[State] = set()
+        counter = 0
+        depth_limit = 1000 if n_agents <= 2 else 600
+
+        while heap:
+            if len(closed) >= max_closed:
+                print(f"  Joint A*: hit {max_closed} state limit.", file=sys.stderr, flush=True)
+                return None
+
+            _, _, node = heapq.heappop(heap)
+            if node.state in closed:
+                continue
+            closed.add(node.state)
+
+            if node.state.is_goal_state():
+                actions: list[list[Action]] = []
+                n: _JNode | None = node
+                while n is not None and n.state.joint_action is not None:
+                    actions.append(n.state.joint_action)
+                    n = n.parent
+                actions.reverse()
+                print(
+                    f"  Joint A*: solved in {len(actions)} steps ({len(closed)} states).",
+                    file=sys.stderr, flush=True,
+                )
+                return actions
+
+            if node.g >= depth_limit:
+                continue
+
+            for succ in node.state.get_expanded_states():
+                if succ in closed:
+                    continue
+                new_g = node.g + 1
+                new_h = self._joint_h(succ)
+                counter += 1
+                heapq.heappush(
+                    heap,
+                    (new_g + new_h, counter, _JNode(f=new_g + new_h, g=new_g, state=succ, parent=node)),
+                )
+
+        return None
+
+    def _joint_h(self, state: State) -> int:
+        """Admissible heuristic for Joint A*: sum of per-agent task lower bounds."""
+        INF = 10 ** 9
+        total = 0
+        for agent in self.agents:
+            # First unfinished task for this agent (uses agent.tasks list)
+            tasks_list = getattr(agent, "tasks", None)
+            if not tasks_list:
+                # nav-only goal
+                if agent.agent_goal is not None and self.dist_map is not None:
+                    gr, gc = agent.agent_goal
+                    ar, ac = state.agent_rows[agent.agent_id], state.agent_cols[agent.agent_id]
+                    total += abs(ar - gr) + abs(ac - gc)
+                continue
+
+            for task in tasks_list:
+                # task is a 5-tuple (br, bc, gr, gc, char)
+                if len(task) < 5:
+                    continue
+                goal_r, goal_c, box_char = task[2], task[3], task[4]
+                if state.boxes[goal_r][goal_c] == box_char:
+                    continue
+                # find box and add its dist to goal
+                for r, row in enumerate(state.boxes):
+                    found = False
+                    for c, ch in enumerate(row):
+                        if ch == box_char and not (r == goal_r and c == goal_c):
+                            d = self.dist_map.dist(goal_r, goal_c, r, c) if self.dist_map else INF
+                            if d >= INF:
+                                d = abs(r - goal_r) + abs(c - goal_c)
+                            total += d
+                            found = True
+                            break
+                    if found:
+                        break
+                break  # only consider first unfinished task
+        return total
+
+    # ------------------------------------------------------------------
+    # Escape cell (ported from felix/structure — graceful deadlock recovery)
+    # ------------------------------------------------------------------
+
+    def _find_escape_cell(self, joint_state: State, agent_id: int) -> tuple[int, int] | None:
+        """BFS outward from agent's current position to find a safe escape cell.
+        Returns a cell ≥6 steps away that is clear of walls/boxes and not near other agents.
+        Direction bias by agent_id helps spread agents apart."""
+        ar = joint_state.agent_rows[agent_id]
+        ac = joint_state.agent_cols[agent_id]
+        other_positions = {
+            (joint_state.agent_rows[a], joint_state.agent_cols[a])
+            for a in range(len(joint_state.agent_rows)) if a != agent_id
+        }
+        blocked_area: set[tuple[int, int]] = set()
+        for r, c in other_positions:
+            for dr in range(-3, 4):
+                for dc in range(-3, 4):
+                    blocked_area.add((r + dr, c + dc))
+
+        dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+        n = agent_id % 4
+        ordered_dirs = dirs[n:] + dirs[:n]
+
+        walls = State.walls
+        num_rows = len(walls)
+        num_cols = len(walls[0]) if walls else 0
+        visited = {(ar, ac)}
+        queue: deque[tuple[int, int, int]] = deque([(ar, ac, 0)])
+
+        while queue:
+            r, c, dist = queue.popleft()
+            if dist >= 15:
+                break
+            for dr, dc in ordered_dirs:
+                nr, nc = r + dr, c + dc
+                if (nr, nc) in visited:
+                    continue
+                if not (0 <= nr < num_rows and 0 <= nc < num_cols):
+                    continue
+                if walls[nr][nc] or joint_state.boxes[nr][nc]:
+                    continue
+                visited.add((nr, nc))
+                new_dist = dist + 1
+                if new_dist >= 6 and (nr, nc) not in blocked_area:
+                    return (nr, nc)
+                queue.append((nr, nc, new_dist))
+        return None
 
     # ------------------------------------------------------------------
     # Validation
