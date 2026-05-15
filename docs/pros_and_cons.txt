@@ -1,0 +1,266 @@
+================================================================================
+ PROS AND CONS — ketan-advanced2
+ Professor-mode review before May 21 code submit + June 1 video
+================================================================================
+
+Honest pre-submission audit. Use this to prioritise the next 17 days.
+
+Bottom line: passing (02) is locked in. Current band is 7. Path to 10 is real.
+12 is not realistic without a fundamental new contribution.
+
+
+================================================================================
+ PROS — what helps the grade
+================================================================================
+
+ 1. MULTI-ALGORITHM PIPELINE WITH CLEAR ROLES
+    Three coordination strategies, each with a defined niche:
+      - CBS for primary multi-agent conflict-free joint planning
+      - HCA* with two-pass projected-state retry as fallback
+      - Joint A* for the ≤2-agent, ≤450-cell regime where it is optimal
+    Plus A* + Kuhn-Munkres Hungarian as foundations. The pipeline runs them
+    cheapest-first so easy levels short-circuit before expensive ones fire.
+
+ 2. CBS-FIRST DECISION IS EMPIRICALLY VALIDATED
+    Not a default — a measured choice. On WardRush, CBS-first reduces setup
+    from ~19 s to ~1.3 s (14× setup speedup, 5.4× total) with identical
+    267-action plan. This is the kind of graduate-level reasoning the course
+    rewards: "we tried both orderings, here is the data." Number is reproducible.
+
+ 3. KUHN-MUNKRES HUNGARIAN, NOT GREEDY
+    The original code called itself "Hungarian" but performed greedy min-cost
+    matching per character. This branch implements actual O(n^3) Kuhn-Munkres
+    from scratch (no scipy dependency added). Defensible: you can say
+    "we use the Hungarian algorithm" and mean it.
+
+ 4. STRUCTURED NEGOTIATION LOG WITH CYCLE DETECTION
+    Cross-agent task swaps are recorded as TaskSwap entries. When a
+    (requester, granter, obstacle_box) tuple repeats 3+ times in 30 turns,
+    further swaps are refused with an explicit cycle-detection message.
+    Replaces the box_swap_count >= 5 band-aid with principled detection.
+    The MADS run produces a clean live trace of this.
+
+ 5. TWO-TIER CHOKEPOINT DETECTION
+    Both agent-blocking AND box-blocking-box chokepoints are detected via
+    BFS-with-cell-removed. The defer mechanism (_chokepoint_blockers_pending
+    + _box_delivery_pending) consults both. The obstacle-clear helper also
+    avoids pushing obstacles INTO pending-chokepoint cells. Few groups will
+    have the box-blocking variant.
+
+ 6. ANYTIME CBS FOR THE 3-MINUTE BUDGET
+    Wall-clock-budgeted CBS with an escalating node-cap schedule
+    (50 → 200 → 800 → 3000). Easy levels return in microseconds; hard
+    levels still get a chance to find a solution before the timeout.
+    Standard "anytime algorithm" vocabulary that graders recognise.
+
+ 7. CUSTOM COMPETITION LEVEL IS WELL-DESIGNED
+    WardRush.lvl — 8 agents, 18×42 cells, complex ward topology with
+    corridors, single passage through the central column, side rooms.
+    Solves cleanly in 267 actions / 4.0 s. Fires both negotiation AND
+    chokepoint mechanisms in a single run.
+
+ 8. PEDAGOGICAL DEMO LEVEL
+    custom/PedagogicalDemo.lvl — 5×16, 3 agents, 2 boxes. Solves in 18
+    actions / 5 ms. Setup log shows the box-chokepoint defer firing
+    cleanly. Ideal for the slow GUI-replay segment of the video.
+
+ 9. ENGINEERING JUDGMENT VISIBLE IN THE CODE
+    - Size-based gating (big_level / very_big_level) skips expensive
+      preprocessing on levels where it would burn the 3-min budget.
+    - Pipeline orderings are cheap-first.
+    - Deadlock detector has a 15-step cooldown to avoid thrashing.
+    - Static constraint pruning every 50 turns prevents unbounded growth.
+
+10. BUG-FINDING RIGOR
+    Three real defects identified and fixed in this branch:
+      - Three print() calls writing to stdout instead of stderr (caused
+        server "Invalid number of agents in joint action" errors).
+      - _chokepoint_blockers_pending consulted only the agent-blocking
+        dict; the box_chokepoint_blockers data was populated but never
+        read. Detection prints fired, defer never happened.
+      - _find_obs_clear_goal could push an obstacle INTO a chokepoint
+        cell, defeating the defer that had just been set up.
+    These were not reported externally — they came from systematic
+    investigation. Research-mode behaviour.
+
+11. REPRODUCIBILITY
+    random.seed(50) at client.py entry. The remaining stochastic paths
+    all draw from the same seeded RNG, so two runs of the same level
+    produce identical action sequences end to end. Important because
+    graders may re-run the client.
+
+12. STRUCTURED OUTPUT FOR VIDEO PRODUCTION
+    client.py writes negotiations.json on exit containing the full
+    TaskSwap log (via dataclasses.asdict). Bridges runtime state to
+    offline analysis / annotated visualisation.
+
+13. CLEAN BRANCH WITH STANDALONE DOCUMENTATION
+    ketan-advanced2 has docs/ketan-advanced2.txt as a 400-line walkthrough
+    of architecture, file inventory, ideas, and run instructions. Makes
+    the project gradeable rather than archaeological.
+
+
+================================================================================
+ CONS — what hurts the grade
+================================================================================
+
+ 1. COVERAGE IS WEAK AND WE KNOW IT
+    Levels confirmed solving:
+      WardRush (own)  267 actions  4.0 s
+      Ccropper         25 actions  0.02 s
+      crayCray         91 actions  3.2 s
+      PedagogicalDemo  18 actions  5 ms
+    Levels confirmed failing (5 of 5 "simple" previous-years tried):
+      MAybetwo     19,500 actions  no solve
+      TeamAgent     4,614 actions  timeout @60s
+      noone        19,500 actions  no solve
+      MADS              262 actions  no solve
+      DECrunchy    10,265 actions  timeout @60s
+      DatzCrazy            75 actions  timeout @60s
+    The competition release on May 18 will likely include similar levels.
+    A "general multi-agent solver" claim is hard to defend on 4 levels,
+    three of which were tuned against directly.
+    >>> Highest single-action lift before May 21: run all 45 previous-
+        years levels overnight, get a real coverage number.
+
+ 2. RANDOM.CHOICE IN STUCK-AGENT RECOVERY  (FIX TOMORROW)
+    Two paths still call random.choice on cardinal Move actions:
+      (a) Obstacle-unblock: when an agent obstacle has no plan, give it
+          a random valid Move.
+      (b) Stuck-agent recovery: after 15 turns with no plan and an open
+          task, inject a random valid Move.
+    Both are seeded so reproducible, but they're not principled. Multiple
+    places in a system called "deterministic" and "negotiated" reduce to
+    "agent X moves in a random direction." Defending this in the video
+    or oral will be uncomfortable. Replacement plan: route both through
+    _find_escape_cell (which already exists for the deadlock recovery
+    branch) and rotate the direction bias per consecutive trigger.
+
+ 3. THE "NEGOTIATION" FRAMING IS GENEROUS
+    There is no message protocol, no acceptance / rejection step, no
+    commitment, no auction. The mechanism is "agent A's blocker is agent
+    B's box; reassign B's task to clear it." Calling this implicit
+    negotiation is fine; calling it auction-style or contract-net
+    coordination is not. Frame it accurately in the video: structured
+    cross-agent task reassignment with cycle detection. The cycle-
+    detection part is the real contribution.
+
+ 4. THE _preplan_for_agent FUNCTION IS A 400-LINE MONOLITH
+    All obstacle classification, foreign-agent lookup, swap dispatch,
+    re-planning, awaiting management, and chokepoint waiting lives in
+    one conditional cascade. Hard to follow, hard to defend in the
+    video, hard to maintain. A clean split (obstacle.py, swap.py,
+    plan.py) would meaningfully change a reader's perception of the
+    project's architectural quality.
+
+ 5. DOCUMENTATION OUTSIDE THIS BRANCH IS UNFINISHED
+    - REPORT.md: 21 lines of warmup exercise answers only.
+    - README.md: two GitHub image links, no narrative.
+    - DESIGN.md: Damian's mostly-empty template with placeholder fields.
+    - CREATION.md: journal-style notes useful only to the author.
+    The docs/ folder added on this branch is good. The rest of the
+    repository's documentation reads as half-built.
+
+ 6. NO FORMAL OR THEORETICAL CONTENT
+    No complexity analysis of the negotiation cycle detector.
+    No admissibility argument for Joint A*'s sum-of-distances heuristic
+    (which, in fact, is non-admissible — it over-counts when agents
+    interfere; we get away with it because Joint A* is gated to ≤2
+    agents). No correctness sketch for HCA*'s two-pass projected state.
+    For an AI+MAS graduate course, some formal reasoning would help.
+
+ 7. THE VIDEO DOES NOT EXIST YET
+    This is the grade artifact. 17 days remain. guide_for_video.pdf
+    has not been downloaded. No outline, no script, no recorded demos.
+    The video is binary risk: a clear 10-minute video on the three
+    big ideas earns a 10. A rambling 12-minute one earns a 7.
+
+ 8. NO COVERAGE TABLE
+    "Our client is general" is unverifiable without one. The graders
+    will weight a "solved 28/45 previous-years levels" table much more
+    than narrative claims. Currently we have informal results on 4 + 5.
+
+ 9. JOINT A* HEURISTIC IS NON-ADMISSIBLE
+    Sum-of-per-agent BFS-to-goal counts the same path twice when agents
+    interfere. Practical mitigation is the ≤2-agent gating; theoretical
+    weakness remains. Either fix (max-of-per-agent) or acknowledge it.
+
+10. CARRY-OVER ARTIFACTS FROM EARLIER WORK
+    - The Agent class has full BDI lifecycle methods (sense, plan_is_sound,
+      replan) that the Manager bypasses. Architecturally honest — but a
+      grader might ask "why have them at all?" Be ready to answer.
+    - "# NOTE: other edge cases here i guess" still appears around line
+      1063 of manager.py. Inline TODO comments like this read as
+      "we shipped what we had."
+
+11. SUBMISSION HYGIENE GAPS
+    - Group name not yet chosen (assignment requires the level filename,
+      level #levelname header, and client identifier to all match a
+      ≤9-letter group name).
+    - code.zip not yet assembled. Decide what to include or exclude
+      (server.jar? previous_years_levels/? PDFs?).
+    - No clean coverage run captured for submission.
+
+
+================================================================================
+ SUMMARY — IF I HAD TO GRADE THIS TODAY
+================================================================================
+
+ Algorithmic ideas (50% of grade weight, my estimate):
+   Strong material here. Three named ideas — negotiation log + cycle
+   detection, two-tier chokepoint reasoning, CBS-first hybrid pipeline.
+   The 5.4× speedup is concrete evidence of empirical reasoning.
+   Caps at 10 because the ideas are credible but not surprising;
+   12 needs a research contribution (theoretical or novel-algorithm).
+
+ Video presentation (50% of grade weight, my estimate):
+   Does not exist. Pure risk.
+
+ Net expectation if video lands well: 10
+ Net expectation if video is uneven: 7
+ Net expectation if video bombs: 4 (still a pass)
+
+
+================================================================================
+ PRIORITISED FIX LIST FOR THE NEXT 17 DAYS
+================================================================================
+
+ (Tomorrow) Replace the two random.choice recovery paths.
+            Route obstacle-unblock + stuck-agent nudge through
+            _find_escape_cell, with rotation across consecutive calls.
+
+ (May 14-17, evenings)
+            Outline + draft video script. Read guide_for_video.pdf.
+            Record dry-run demos of WardRush and PedagogicalDemo.
+
+ (May 17, overnight)
+            Run all 45 previous-years levels with 180 s timeout.
+            Tabulate results. This is your coverage evidence.
+
+ (May 18, release)
+            Run competition levels the moment they release.
+            Look for the ONE common failure pattern across 3+ levels.
+            If found, that's the single highest-impact fix for May 21.
+
+ (May 19-20)
+            Fix only the patterns identified in (May 18).
+            No new features. Lock the algorithm.
+
+ (May 21, by 20:00)
+            Submit code.zip and <group>.zip.out.
+            Stop coding.
+
+ (May 22-25)
+            Record video. Edit. Cut to ≤12:00 ruthlessly.
+
+ (May 26, 14:00-17:00)
+            Compete in person. Take notes during head-to-head
+            battles — those notes feed the video's closer.
+
+ (May 27 - June 1)
+            Final video polish. Submit by 20:00 June 1.
+
+
+================================================================================
+ END OF FILE
+================================================================================
