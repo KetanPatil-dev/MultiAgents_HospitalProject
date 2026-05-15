@@ -1,0 +1,21 @@
+#domain
+hospital
+#levelname
+PedagogicalDemo
+#colors
+red: 0, A
+blue: 1, B
+green: 2
+#initial
++++++++++++++++
++0 A B        +
++++++++++++ +++
++         1 2 +
++++++++++++++++
+#goal
++++++++++++++++
++      A B    +
++++++++++++ +++
++             +
++++++++++++++++
+#end

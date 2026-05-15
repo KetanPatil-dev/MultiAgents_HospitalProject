@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import heapq
 import sys
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -40,6 +41,44 @@ class _CBSNode:
     tie: int = field(compare=False)
     constraints: dict = field(compare=False, default_factory=dict)  # agent_id -> set[(r,c,t)]
     plans: dict = field(compare=False, default_factory=dict)        # agent_id -> list[Action]
+
+
+def anytime_cbs_solve(
+    state: State,
+    agent_goals: dict,
+    dist_map: "DistanceMap | None" = None,
+    time_budget_s: float = 5.0,
+    cap_schedule: tuple[int, ...] = (50, 200, 800, 3000),
+) -> dict | None:
+    """
+    Anytime CBS: try progressively larger node caps until either a solution
+    is found or the wall-clock time budget is exhausted.
+
+    The cap schedule starts cheap so easy levels return immediately, then
+    escalates for harder conflict patterns. We return the first cap that
+    yields a solution (which is also the cheapest in this monotone scheme).
+    """
+    deadline = time.time() + time_budget_s
+    for cap in cap_schedule:
+        if time.time() >= deadline:
+            print(
+                f"  Anytime CBS: time budget exhausted ({time_budget_s:.1f}s) — giving up.",
+                file=sys.stderr, flush=True,
+            )
+            return None
+        result = cbs_solve(state, agent_goals, dist_map, max_nodes=cap)
+        if result is not None:
+            elapsed = time_budget_s - max(0.0, deadline - time.time())
+            print(
+                f"  Anytime CBS: solved at cap {cap} in {elapsed:.2f}s.",
+                file=sys.stderr, flush=True,
+            )
+            return result
+    print(
+        f"  Anytime CBS: exhausted cap schedule {cap_schedule}.",
+        file=sys.stderr, flush=True,
+    )
+    return None
 
 
 def cbs_solve(

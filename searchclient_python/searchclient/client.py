@@ -85,6 +85,30 @@ def main(args: argparse.Namespace) -> None:
     else:
         print(f"Did not solve within {t} steps.", file=sys.stderr, flush=True)
 
+    _dump_negotiations(manager, t)
+
+
+def _dump_negotiations(manager, final_t: int) -> None:
+    """Write the manager's negotiation log to negotiations.json next to the cwd.
+    The file is consumed by the post-hoc visualisation tool."""
+    import json
+    from dataclasses import asdict
+    try:
+        payload = {
+            "final_t": final_t,
+            "level_name": getattr(manager.profile, "level_name", None) if manager.profile else None,
+            "num_agents": getattr(manager.profile, "num_agents", None) if manager.profile else None,
+            "negotiations": [asdict(s) for s in manager.negotiations],
+        }
+        with open("negotiations.json", "w") as fh:
+            json.dump(payload, fh, indent=2, default=str)
+        print(
+            f"Negotiation log: {len(manager.negotiations)} entries written to negotiations.json",
+            file=sys.stderr, flush=True,
+        )
+    except Exception as e:
+        print(f"Failed to write negotiations.json: {e}", file=sys.stderr, flush=True)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(

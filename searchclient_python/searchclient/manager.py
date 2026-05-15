@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import heapq
 import random
+import sys
 from collections import deque
 from dataclasses import dataclass, field
-import sys
-from typing import TYPE_CHECKING, TypedDict
+from typing import TypedDict
 
 from searchclient.action import Action, ActionType
 from searchclient.agent import Agent
@@ -24,15 +24,15 @@ from searchclient.level_parser import LevelProfile
 from searchclient.state import State
 from searchclient.planner.astar import solve
 from searchclient.Task import Task
-
-if TYPE_CHECKING:
-    pass
+from searchclient.task_swap import TaskSwap
 
 
 # Joint A* state-space caps (scaled by agent count)
 _JOINT_MAX_CLOSED_2  = 1_000_000   # 2-agent levels
 _JOINT_MAX_CLOSED_3  = 500_000     # 3-agent levels
 _JOINT_MAX_CLOSED    = 300_000     # 4+ agent levels (rarely used)
+# Max future timesteps for permanent constraints in HCA* pass 2
+_MAX_FUTURE = 600
 
 
 @dataclass(order=True)
@@ -72,9 +72,9 @@ class Manager:
         # Task lists by agent color: {Color: {'future': [...], 'current': [...]}}
         self.color_tasks: dict[Color | None, ColorTasksTypedDict] = {}
         self.agents_awaiting_other_agent: dict[int, int | None] = {}
+        # Per-agent count of consecutive turns with no plan + an open task.
+        # Used by stuck-agent recovery to inject a single-turn random nudge.
         self.agents_no_plan_cnt: dict[int, int] = {}
-        # Track how many times each box has been swap-cleared to prevent infinite oscillation
-        self.box_swap_count: dict[str, int] = {}
         # Rolling history of joint-state hashes for cycle detection.
         # When the same hash appears N+ times in the window, we're in a deadlock.
         self._state_history: deque = deque(maxlen=30)
@@ -82,6 +82,10 @@ class Manager:
         # Chokepoint goals: {(goal_r, goal_c): set[agent_ids_that_need_to_pass_through]}
         # Delivering a box here is deferred until those agents reach their goals.
         self.chokepoint_goals: dict[tuple[int, int], set[int]] = {}
+        # Negotiation log: every cross-agent task swap is recorded here.
+        # Used for cycle detection and offline analysis / visualisation of the
+        # decision chain.
+        self.negotiations: list[TaskSwap] = []
 
     # ------------------------------------------------------------------
     # Setup (once after parsing)
@@ -143,20 +147,18 @@ class Manager:
         big_level = n_cells > 2000 and profile.num_agents > 8
         very_big_level = n_cells > 3000 or profile.num_agents > 10
 
-        # ──────────────────────────────────────────────────────────────────
-        # FAST PATH: try Hungarian + HCA* FIRST. If it produces a complete
-        # joint plan, use that and skip the rest of the pipeline.
-        # ──────────────────────────────────────────────────────────────────
-        if not very_big_level and self._try_hungarian_hca_fast_path(initial_state):
-            print("Fast path succeeded — using Hungarian + HCA* plans.", file=sys.stderr, flush=True)
-            return
+        # Initialize joint_plan here so all early-return paths see a defined attr.
+        self._joint_plan: list[list[Action]] = []
 
-        # Fast path didn't get all agents — reset and run our reactive pipeline
-        for agent in self.agents:
-            agent._plan = []
-            agent._plan_index = 0
-            agent.tasks = []
-            agent.constraints = set()
+        # ──────────────────────────────────────────────────────────────────
+        # CBS-first pipeline: the reactive pipeline below runs CBS (cheap,
+        # solves most cases in <1s) before HCA* (expensive, often burns 10s+
+        # exhausting MAX_CLOSED when its hard priority constraints make a
+        # solvable problem look infeasible). Previously we attempted an
+        # HCA*-first fast path here; removed because on WardRush it wasted
+        # ~17s proving HCA* couldn't handle agents 1/2/3 only to then have
+        # CBS solve the same problem in 1 node.
+        # ──────────────────────────────────────────────────────────────────
 
         # Step 1c: Pre-inject corridor-clearing tasks for deco boxes that block passages
         if not very_big_level:
@@ -192,9 +194,7 @@ class Manager:
 
         # Step 1g: Joint A* — for small levels (≤2 agents, ≤450 cells), try the
         # optimal joint state-space search. If it succeeds, we use that plan
-        # instead of the reactive system.
-        self._joint_plan: list[list[Action]] = []
-        n_cells = profile.num_rows * profile.num_cols
+        # instead of the reactive system. (_joint_plan already initialized above.)
         if profile.num_agents <= 2 and n_cells <= 450:
             print(
                 f"Trying Joint A* (small level: {profile.num_agents} agents, {n_cells} cells).",
@@ -207,63 +207,6 @@ class Manager:
                     f"Joint A* found plan of length {len(joint_actions)}.",
                     file=sys.stderr, flush=True,
                 )
-
-    def _try_hungarian_hca_fast_path(self, initial_state: State) -> bool:
-        """FAST PATH: try Hungarian + HCA* + Joint A* before our reactive pipeline.
-        Returns True if every agent that has a goal has a plan. Otherwise resets
-        all agent state to clean and returns False so the reactive pipeline runs."""
-        from searchclient.planner.hungarian import assign, agent_goals_assign, subgoal_order
-
-        if self.profile is None or self.dist_map is None:
-            return False
-
-        # Assign boxes to agents (Hungarian)
-        box_assignment = assign(
-            agents=self.agents,
-            boxes=self.profile.real_boxes,
-            goals=self.profile.box_goals,
-            dist_map=self.dist_map,
-        )
-        agent_rows0 = initial_state.agent_rows
-        agent_cols0 = initial_state.agent_cols
-        for agent in self.agents:
-            tasks = box_assignment.get(agent.agent_id, [])
-            if len(tasks) > 1:
-                tasks = subgoal_order(
-                    tasks, self.dist_map,
-                    start_r=agent_rows0[agent.agent_id],
-                    start_c=agent_cols0[agent.agent_id],
-                )
-            agent.tasks = tasks
-
-        # Assign positional goals
-        ag_goals = agent_goals_assign(self.agents, self.profile.agent_goals)
-        for agent in self.agents:
-            agent.agent_goal = ag_goals.get(agent.agent_id)
-
-        # Run HCA* two-pass
-        try:
-            self._hca_preplan(initial_state)
-        except Exception as e:
-            print(f"  Fast path HCA* errored: {e}", file=sys.stderr, flush=True)
-            return False
-
-        # For small levels (≤2 agents), try Joint A* on agents without HCA* plans
-        n_cells = self.profile.num_rows * self.profile.num_cols
-        if self.profile.num_agents <= 2 and n_cells <= 450:
-            joint_actions = self._joint_astar_plan(initial_state)
-            if joint_actions is not None:
-                self._joint_plan = joint_actions
-                return True  # Joint plan handles everything
-
-        # Verify: every agent with a goal (box task or positional) has a plan
-        for agent in self.agents:
-            has_goal = getattr(agent, "tasks", None) or agent.agent_goal is not None
-            if has_goal and not agent._plan:
-                # An agent isn't planned — fast path failed
-                return False
-
-        return True
 
     def _hungarian_and_hca(self, initial_state: State) -> None:
         """Run Hungarian box assignment + subgoal ordering, populate agent.tasks
@@ -433,28 +376,59 @@ class Manager:
                     )
 
     def _chokepoint_blockers_pending(self, task: Task) -> bool:
-        """Return True if delivering this box-task would block agents whose
-        positional goals are not yet satisfied."""
+        """Return True if delivering this box-task would block either:
+          (a) an agent whose positional goal is not yet satisfied, OR
+          (b) another box whose delivery is not yet completed.
+        """
         if task.task_type != "move_box":
             return False
-        if task.goal_pos not in self.chokepoint_goals:
-            return False
-        blocked_agents = self.chokepoint_goals[task.goal_pos]
-        for aid in blocked_agents:
-            ag = self.agents[aid]
-            if not ag.has_reached_its_goal:
-                for gr, gc, gid in (self.profile.agent_goals if self.profile else []):
-                    if gid == aid and (ag.agent_row, ag.agent_col) != (gr, gc):
-                        return True
+
+        # (a) Agent-blocking chokepoint
+        if task.goal_pos in self.chokepoint_goals:
+            blocked_agents = self.chokepoint_goals[task.goal_pos]
+            for aid in blocked_agents:
+                ag = self.agents[aid]
+                if not ag.has_reached_its_goal:
+                    for gr, gc, gid in (self.profile.agent_goals if self.profile else []):
+                        if gid == aid and (ag.agent_row, ag.agent_col) != (gr, gc):
+                            return True
+
+        # (b) Box-blocking-box chokepoint: delivering this task would close
+        # a passage another box's delivery path depends on. Defer until that
+        # blocker box is delivered.
+        box_blockers = getattr(self, "box_chokepoint_blockers", None)
+        if box_blockers and task.goal_pos in box_blockers:
+            for _b_r, _b_c, b_char in box_blockers[task.goal_pos]:
+                if task.box_char == b_char:
+                    continue  # ignore self
+                if self._box_delivery_pending(b_char):
+                    return True
+
+        return False
+
+    def _box_delivery_pending(self, box_char: str) -> bool:
+        """True if any move_box task for `box_char` is still pending (in a
+        future queue or currently assigned to an agent) — i.e. not yet solved."""
+        # Currently assigned to an agent?
+        for agent in self.agents:
+            t = agent.task
+            if t is not None and t.task_type == "move_box" and t.box_char == box_char:
+                return True
+        # In any color's future_box_tasks?
+        for bucket in self.color_tasks.values():
+            for t in bucket["future_box_tasks"]:
+                if t.task_type == "move_box" and t.box_char == box_char:
+                    return True
         return False
 
     def _cbs_preplan(self, initial_state: State) -> None:
         """
-        Run CBS over all agents' first tasks. Pops one task per agent from the
-        future queues, runs CBS to find conflict-free plans, and stores them in
-        each agent's `_plan`. Falls back silently to reactive planning if CBS fails.
+        Run anytime CBS over all agents' first tasks. Pops one task per agent
+        from the future queues, runs CBS with a progressively-expanding node
+        cap under a wall-clock budget, and stores any solution in each agent's
+        `_plan`. Falls back silently to reactive planning if CBS fails.
         """
-        from searchclient.planner.cbs import cbs_solve
+        from searchclient.planner.cbs import anytime_cbs_solve
 
         agent_goals: dict[int, tuple] = {}
         assigned_tasks: dict[int, Task] = {}
@@ -472,11 +446,11 @@ class Manager:
             print("  CBS: no tasks to plan.", file=sys.stderr, flush=True)
             return
 
-        plans = cbs_solve(
+        plans = anytime_cbs_solve(
             state=initial_state,
             agent_goals=agent_goals,
             dist_map=self.dist_map,
-            max_nodes=200,
+            time_budget_s=5.0,
         )
 
         if plans is None:
@@ -661,8 +635,8 @@ class Manager:
 
     def _sync_agent_task_state(self, agent_id: int, task: Task) -> None:
         """
-        Keep the Agent's internal task/goal fields aligned with the manager task.
-        This allows Agent.replan() to work after task completion.
+        Keep the Agent's internal task/goal fields aligned with the manager
+        task — `_preplan_for_agent` reads these fields when computing routes.
         """
         agent = self.agents[agent_id]
 
@@ -969,43 +943,6 @@ class Manager:
                     flush=True,
                 )
 
-                # closest_foreign_color_agent = None
-                # closest_distance = float("inf")
-                # for other_agent in self.agents:
-                #     if other_agent.agent_id == agent_id:
-                #         continue
-                #     if State.agent_colors[other_agent.agent_id] == box_obstacles[0][2]:
-                #         if self.dist_map is None:
-                #             print(
-                #                 f"  Agent {agent_id}: distance map not initialized, cannot evaluate obstacle proximity.",
-                #                 file=sys.stderr,
-                #                 flush=True,
-                #             )
-                #             break
-                #         bfs_table = self.dist_map._bfs(
-                #             other_agent.agent_row,
-                #             other_agent.agent_col,
-                #             # box_obstacles[0][0],
-                #             # box_obstacles[0][1],
-                #         )
-                #         dist = bfs_table[box_obstacles[0][0]][box_obstacles[0][1]]
-                #         if dist is not None and dist < closest_distance:
-                #             closest_distance = dist
-                #             closest_foreign_color_agent = other_agent
-
-                # if closest_foreign_color_agent is None:
-                #     print(
-                #         f"  Agent {agent_id}: no agents of color {box_obstacles[0][2]} found to evaluate obstacle proximity.",
-                #         file=sys.stderr,
-                #         flush=True,
-                #     )
-                #     return False
-
-                # print(
-                #     f"  Agent {agent_id}: closest agent of color {box_obstacles[0][2]} is Agent {closest_foreign_color_agent.agent_id} at distance {closest_distance}.",
-                #     file=sys.stderr,
-                #     flush=True,
-                # )
                 foreign_agent = next(
                     (
                         agent
@@ -1026,6 +963,7 @@ class Manager:
                         foreign_agent.agent_id,
                         box_obstacles[0],
                         joint_state,
+                        requester_id=agent_id,
                     )
 
                     if managed_foreign_to_swap and foreign_agent.task is not None:
@@ -1071,18 +1009,13 @@ class Manager:
                     self.agents[obstacle_agent_id].task is not None
                     and len(self.agents[obstacle_agent_id]._plan) == 0
                 ):
-                    # give that agent some random move that is available (Move only for now)
+                    # Give the obstacle agent a single cardinal nudge to move
+                    # out of the way. Uses the seeded RNG (random.seed(50) at
+                    # client.py top) so runs are reproducible end-to-end.
                     obstacle_agent = self.agents[obstacle_agent_id]
-                    # Candidate move actions
-                    candidate_moves = [
-                        Action.MoveN,
-                        Action.MoveS,
-                        Action.MoveE,
-                        Action.MoveW,
-                    ]
+                    candidate_moves = [Action.MoveN, Action.MoveS, Action.MoveE, Action.MoveW]
                     valid_moves = [
-                        a
-                        for a in candidate_moves
+                        a for a in candidate_moves
                         if joint_state.is_applicable(obstacle_agent.agent_id, a)
                     ]
                     if valid_moves:
@@ -1090,7 +1023,7 @@ class Manager:
                         obstacle_agent._plan = [chosen]
                         obstacle_agent._plan_index = 0
                         print(
-                            f"  Obstacle Agent {obstacle_agent_id}: given random unblock move {chosen.name_}",
+                            f"  Obstacle Agent {obstacle_agent_id}: unblock nudge {chosen.name_}",
                             file=sys.stderr,
                             flush=True,
                         )
@@ -1118,8 +1051,8 @@ class Manager:
 
             goal_tuple = self._convert_task_to_goal_tuple(current_task)
 
-            # NOTE: timestep is set to 0 because solve function is unaware of the concept of time
-            # this is a bug and should be fixed
+            # A* runs in solver-local time starting at t=0; awaiting-agent
+            # constraints are encoded at search-time t=0..9 (10-turn horizon).
             runtime_constraints = self._build_runtime_constraints(
                 agent_id, 0, horizon=10
             )
@@ -1142,10 +1075,8 @@ class Manager:
                 )
                 return True
 
-            # NOTE: agent.replan() fallback disabled — too slow on large levels
-
-            # Both A* and replan failed. Check if goal cell is blocked by another box
-            # and wait for the responsible agent to clear it.
+            # A* failed. Check if goal cell is blocked by another box and
+            # wait for the responsible agent of that color to clear it.
             if current_task.task_type == "move_box" and self.agents_awaiting_other_agent[agent_id] is None:
                 gr, gc = current_task.goal_pos
                 blocker_char = joint_state.boxes[gr][gc]
@@ -1434,11 +1365,23 @@ class Manager:
                 return False
             return True
 
-        # Pass 1: dest free AND push-from free (immediately executable push)
+        def is_chokepoint_for_pending(r: int, c: int) -> bool:
+            """True if (r, c) is a box-chokepoint cell whose blocked box
+            delivery is still pending — pushing the obstacle here would
+            permanently break that other delivery."""
+            box_blockers = getattr(self, "box_chokepoint_blockers", None)
+            if box_blockers and (r, c) in box_blockers:
+                for _br, _bc, b_char in box_blockers[(r, c)]:
+                    if self._box_delivery_pending(b_char):
+                        return True
+            return False
+
+        # Pass 1: dest free AND push-from free AND not a pending-box-chokepoint cell
         for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
             dest_r, dest_c = obs_r + dr, obs_c + dc
             push_from_r, push_from_c = obs_r - dr, obs_c - dc
-            if is_free(dest_r, dest_c) and is_free(push_from_r, push_from_c):
+            if (is_free(dest_r, dest_c) and is_free(push_from_r, push_from_c)
+                    and not is_chokepoint_for_pending(dest_r, dest_c)):
                 return (dest_r, dest_c)
 
         # Pass 2: BFS through all non-wall cells (including box-occupied ones) to find
@@ -1461,9 +1404,10 @@ class Manager:
         while bfs_q:
             r, c = bfs_q.popleft()
             if (r, c) != (obs_r, obs_c) and not State.walls[r][c]:
-                # Only return this cell if it's currently box-free
+                # Only return this cell if it's currently box-free AND
+                # not a pending-box chokepoint
                 cell_has_box = state is not None and state.boxes[r][c] != ""
-                if not cell_has_box:
+                if not cell_has_box and not is_chokepoint_for_pending(r, c):
                     if any_free is None:
                         any_free = (r, c)
                     if free_cardinal_count(r, c) >= 3:
@@ -1482,20 +1426,66 @@ class Manager:
 
         return any_free if any_free is not None else (obs_r, obs_c)
 
+    # ------------------------------------------------------------------
+    # Negotiation log helpers
+    # ------------------------------------------------------------------
+
+    def _record_swap(
+        self, requester: int, granter: int, obstacle_box: str,
+        obstacle_pos: tuple[int, int], original_task: "Task | None",
+        new_task: "Task", same_color: bool,
+    ) -> None:
+        """Append a TaskSwap entry to the negotiation log."""
+        swap = TaskSwap(
+            requester=requester,
+            granter=granter,
+            obstacle_box=obstacle_box,
+            obstacle_pos=obstacle_pos,
+            original_task=original_task,
+            new_task=new_task,
+            t_initiated=self.timestep,
+            same_color=same_color,
+        )
+        self.negotiations.append(swap)
+        kind = "intra-color" if same_color else "cross-color"
+        print(
+            f"  [NEGOTIATION] t={self.timestep} {kind}: Agent {requester} "
+            f"requested Agent {granter} clear box {obstacle_box} at {obstacle_pos}.",
+            file=sys.stderr, flush=True,
+        )
+
+    def _recent_swap_count(
+        self, requester: int, granter: int, obstacle_box: str, window: int = 30,
+    ) -> int:
+        """Count how many times (requester, granter, obstacle_box) has been
+        swapped within the recent `window` timesteps. Used to detect
+        oscillating negotiation cycles."""
+        return sum(
+            1 for s in self.negotiations
+            if (self.timestep - s.t_initiated) < window
+            and s.requester == requester
+            and s.granter == granter
+            and s.obstacle_box == obstacle_box
+        )
+
     def _swap_foreign_task_with_obstacle(
         self,
         foreign_agent_id: int,
         obstacle: tuple[int, int, Color, bool, str],
         state: "State | None" = None,
+        requester_id: int | None = None,
     ) -> bool:
         """
-        Swap the task of a foreign agent with an obstacle task if possible.
+        Cross-color negotiation: reassign a foreign agent's task to clear a
+        blocking obstacle box.
 
         Args:
-            foreign_agent_id: ID of the agent to attempt the swap on
-            obstacle: (obs_r, obs_c, obs_color, obstacle_after_box, obstacle_type) position and color of the blocking box
-
-
+            foreign_agent_id: ID of the agent of the obstacle's color (the granter)
+            obstacle: (obs_r, obs_c, obs_color, obstacle_after_box, obstacle_type)
+            state:    optional joint state for clear-goal lookup
+            requester_id: agent that requested the swap (the one being blocked).
+                          If None, swap is recorded but cycle-detection key is
+                          incomplete.
         """
         obs_r, obs_c, obs_color, obstacle_after_box, obstacle_type = obstacle
 
@@ -1531,17 +1521,23 @@ class Manager:
             )
             return True  # treat as success so awaiting gets set
 
-        # Prevent infinite oscillation: cap how many times a box gets swap-cleared
-        if box_char is not None:
-            count = self.box_swap_count.get(box_char, 0)
-            if count >= 5:
+        # Cycle detection: if this exact (requester, granter, box) has been
+        # swapped 3+ times in the recent window, the negotiation chain is in
+        # oscillation — refuse further swaps to break the cycle.
+        if box_char is not None and requester_id is not None:
+            cycle_count = self._recent_swap_count(
+                requester=requester_id,
+                granter=foreign_agent_id,
+                obstacle_box=box_char,
+            )
+            if cycle_count >= 3:
                 print(
-                    f"  Foreign Agent {foreign_agent_id}: box {box_char} swap-cleared "
-                    f"{count} times already, refusing further swaps.",
+                    f"  Negotiation cycle detected: Agent {requester_id} -> "
+                    f"Agent {foreign_agent_id} over box {box_char} ({cycle_count}x); "
+                    f"refusing further swaps.",
                     file=sys.stderr, flush=True,
                 )
                 return False
-            self.box_swap_count[box_char] = count + 1
 
         clear_goal = self._find_obs_clear_goal(obs_r, obs_c, state)
         box_char = State.get_box_char_from_color(obs_color)
@@ -1633,6 +1629,18 @@ class Manager:
 
         self.agents[foreign_agent_id].task = new_task
         self._sync_agent_task_state(foreign_agent_id, new_task)
+
+        # Record this cross-color negotiation for cycle detection + analysis
+        if box_char is not None and requester_id is not None:
+            self._record_swap(
+                requester=requester_id,
+                granter=foreign_agent_id,
+                obstacle_box=box_char,
+                obstacle_pos=(obs_r, obs_c),
+                original_task=current_task,
+                new_task=new_task,
+                same_color=False,
+            )
 
         return True
 
@@ -1734,7 +1742,9 @@ class Manager:
                         flush=True,
                     )
                     print(
-                        f"Updating that future goal to the goal_pos after the swapping: {new_task.goal_pos}"
+                        f"Updating that future goal to the goal_pos after the swapping: {new_task.goal_pos}",
+                        file=sys.stderr,
+                        flush=True,
                     )
                     self.color_tasks[target_color]["future_box_tasks"][
                         obstacle_index
@@ -1786,7 +1796,9 @@ class Manager:
                         flush=True,
                     )
                     print(
-                        f"Updating that future goal to the goal_pos after the swapping: {new_task.goal_pos}"
+                        f"Updating that future goal to the goal_pos after the swapping: {new_task.goal_pos}",
+                        file=sys.stderr,
+                        flush=True,
                     )
                     self.color_tasks[target_color]["future_box_tasks"][
                         obstacle_index
@@ -1852,7 +1864,7 @@ class Manager:
 
             return True
 
-        print("Swapping edgecase NOT IMPLEMENTED YET")
+        print("Swapping edgecase NOT IMPLEMENTED YET", file=sys.stderr, flush=True)
         return False
 
     # ------------------------------------------------------------------
@@ -1883,37 +1895,36 @@ class Manager:
                     self._sync_agent_task_state(agent.agent_id, agent.task)
 
             self._maybe_advance_completed_task_or_preplan(joint_state, agent.agent_id)
-            # agent.sense(joint_state, t)
-            # if not agent.plan_is_sound(joint_state, t):
-            #     success = agent.replan(joint_state, t)
-            #     if not success:
-            #         print(
-            #             f"t={t} Agent {agent.agent_id}: replan failed.",
-            #             file=sys.stderr,
-            #             flush=True,
-            #         )
         joint_action = []
         for agent in self.agents:
             action = agent.next_action()
             joint_action.append(action)
 
-        # If an agent has had no plan for 10 consecutive turns, force a random
-        # valid Move so it can try to unblock itself.
+        # Stuck-agent recovery: agents that haven't been able to plan for
+        # STUCK_THRESHOLD consecutive turns are given a single-turn cardinal
+        # nudge sampled from the seeded RNG (random.seed(50) at client.py
+        # entry). Reproducible across runs while ensuring distinct directions
+        # are tried on consecutive triggers.
+        STUCK_THRESHOLD = 15
+        nudge_dirs = [Action.MoveN, Action.MoveS, Action.MoveE, Action.MoveW]
         for agent in self.agents:
             if len(agent._plan) > 0 or agent.task is None:
                 self.agents_no_plan_cnt[agent.agent_id] = 0
                 continue
-
             self.agents_no_plan_cnt[agent.agent_id] += 1
-            if self.agents_no_plan_cnt[agent.agent_id] >= 15:
-                random_move = self._get_random_valid_move(joint_state, agent.agent_id)
-                if random_move is not None:
-                    joint_action[agent.agent_id] = random_move
-                    self.agents_no_plan_cnt[agent.agent_id] = 0
+            if self.agents_no_plan_cnt[agent.agent_id] >= STUCK_THRESHOLD:
+                self.agents_no_plan_cnt[agent.agent_id] = 0
+                valid = [
+                    a for a in nudge_dirs
+                    if joint_state.is_applicable(agent.agent_id, a)
+                ]
+                if valid:
+                    chosen = random.choice(valid)
+                    joint_action[agent.agent_id] = chosen
                     print(
-                        f"  Agent {agent.agent_id}: no plan for 10 rounds, forcing random move {random_move.name_}.",
-                        file=sys.stderr,
-                        flush=True,
+                        f"  Agent {agent.agent_id}: stuck for {STUCK_THRESHOLD} turns, "
+                        f"nudge {chosen.name_}.",
+                        file=sys.stderr, flush=True,
                     )
 
         # Validate joint action and receive offending agents (if any)
@@ -2033,20 +2044,6 @@ class Manager:
             agent._plan_index = 0
             self.agents_awaiting_other_agent[agent.agent_id] = None
             agent.awaiting_cnt = 0
-
-    def _get_random_valid_move(
-        self, joint_state: State, agent_id: int
-    ) -> Action | None:
-        """Return a random valid move-only action for the agent, or None if blocked."""
-        candidates = [Action.MoveN, Action.MoveS, Action.MoveE, Action.MoveW]
-        valid_moves = [
-            action
-            for action in candidates
-            if joint_state.is_applicable(agent_id, action)
-        ]
-        if not valid_moves:
-            return None
-        return random.choice(valid_moves)
 
     def _sync_agent_positions(self, joint_state: State) -> None:
         """Cache the latest row/col position for each agent."""
@@ -2230,18 +2227,50 @@ class Manager:
             if bxr >= 0:
                 other.constraints.add((bxr, bxc, len(plan)))
 
+    def _compute_box_trajectory(
+        self, initial_state: State, agent_id: int,
+        box_r: int, box_c: int, plan: list[Action],
+    ) -> list[tuple[int, int, int]]:
+        """Return [(r, c, t)] — box position at each timestep during plan."""
+        trajectory: list[tuple[int, int, int]] = []
+        ar = initial_state.agent_rows[agent_id]
+        ac = initial_state.agent_cols[agent_id]
+        bxr, bxc = box_r, box_c
+        for t, action in enumerate(plan):
+            trajectory.append((bxr, bxc, t))
+            if action.type is ActionType.Push:
+                new_bxr = bxr + action.box_row_delta
+                new_bxc = bxc + action.box_col_delta
+                ar, ac = bxr, bxc
+                bxr, bxc = new_bxr, new_bxc
+            elif action.type is ActionType.Pull:
+                new_bxr, new_bxc = ar, ac
+                ar = ar + action.agent_row_delta
+                ac = ac + action.agent_col_delta
+                bxr, bxc = new_bxr, new_bxc
+            elif action.type is ActionType.Move:
+                ar += action.agent_row_delta
+                ac += action.agent_col_delta
+        trajectory.append((bxr, bxc, len(plan)))
+        return trajectory
+
     def _hca_retry_failed(self, initial_state: State) -> None:
         """Pass 2 of HCA*: retry agents that failed pass 1, using a projected
-        state where other agents' boxes are REMOVED."""
+        state where other agents' boxes are REMOVED, plus:
+          - time-indexed box-trajectory constraints (wait until cell clears)
+          - permanent constraints for the goal position after plan ends
+        """
         needs_retry = [
             a for a in self.agents
-            if (a.tasks or a.agent_goal is not None) and not a._plan
+            if (getattr(a, "tasks", None) or a.agent_goal is not None) and not a._plan
         ]
         if not needs_retry:
             return
 
         for agent in needs_retry:
             proj_boxes = [row[:] for row in initial_state.boxes]
+            extra_constraints: set[tuple[int, int, int]] = set()
+
             for other in self.agents:
                 if other.agent_id == agent.agent_id:
                     continue
@@ -2250,16 +2279,62 @@ class Manager:
                 other_task = other.tasks[0]
                 o_goal_r, o_goal_c, o_char = other_task[2], other_task[3], other_task[4]
                 o_box_r, o_box_c = agent._find_box(initial_state, o_char, o_goal_r, o_goal_c)
-                if o_box_r is not None and 0 <= o_box_r < len(proj_boxes):
+                if o_box_r is None:
+                    continue
+
+                # Time-indexed box-trajectory: wait for box to vacate each cell
+                traj = self._compute_box_trajectory(
+                    initial_state, other.agent_id, o_box_r, o_box_c, other._plan,
+                )
+                extra_constraints.update(traj)
+
+                # Remove box from initial static grid
+                if 0 <= o_box_r < len(proj_boxes) and 0 <= o_box_c < len(proj_boxes[0]):
                     proj_boxes[o_box_r][o_box_c] = ""
 
-            proj_state = State(initial_state.agent_rows[:], initial_state.agent_cols[:], proj_boxes)
-            full_plan, success = self._plan_all_tasks(agent, proj_state, 0)
+                # Permanent constraints: after the other agent's plan ends,
+                # the box stays at the goal cell.
+                for t_fut in range(len(other._plan), _MAX_FUTURE):
+                    extra_constraints.add((o_goal_r, o_goal_c, t_fut))
+
+            proj_state = State(
+                initial_state.agent_rows[:],
+                initial_state.agent_cols[:],
+                proj_boxes,
+            )
+
+            # Plan with combined constraints (agent's own + extra trajectory + permanents)
+            saved = agent.constraints
+            agent.constraints = agent.constraints | extra_constraints
+
+            if getattr(agent, "tasks", None):
+                full_plan, success = self._plan_all_tasks(agent, proj_state, 0)
+            elif agent.agent_goal is not None:
+                gr, gc = agent.agent_goal
+                plan = solve(
+                    state=proj_state,
+                    agent_id=agent.agent_id,
+                    goal=(None, None, gr, gc),
+                    constraints=agent.constraints,
+                    dist_map=self.dist_map,
+                )
+                full_plan = plan if plan else []
+                success = plan is not None
+            else:
+                full_plan, success = [], False
+
+            agent.constraints = saved  # restore
+
             if success and full_plan:
                 agent._plan = full_plan
                 agent._plan_index = 0
                 print(
                     f"  HCA* pass 2: Agent {agent.agent_id} succeeded (length {len(full_plan)}).",
+                    file=sys.stderr, flush=True,
+                )
+            else:
+                print(
+                    f"  HCA* pass 2: Agent {agent.agent_id} FAILED.",
                     file=sys.stderr, flush=True,
                 )
 
@@ -2371,7 +2446,7 @@ class Manager:
     def _find_escape_cell(self, joint_state: State, agent_id: int) -> tuple[int, int] | None:
         """BFS outward from agent's current position to find a safe escape cell.
         Returns a cell ≥6 steps away that is clear of walls/boxes and not near other agents.
-        Direction bias by agent_id helps spread agents apart."""
+        Direction bias by `agent_id % 4` helps spread escaping agents apart."""
         ar = joint_state.agent_rows[agent_id]
         ac = joint_state.agent_cols[agent_id]
         other_positions = {

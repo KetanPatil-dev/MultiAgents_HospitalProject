@@ -35,11 +35,11 @@ def assign(
     dist_map: "DistanceMap",
 ) -> dict[int, list[tuple]]:
     """
-    Color-aware greedy assignment.
+    Color-aware optimal assignment.
 
-    Only agents whose color matches a box's color can be assigned that box.
-    Box-goal pairs are matched greedily: cheapest (BFS dist box→goal) first.
-    Agents are load-balanced: the agent with the fewest tasks gets each pair.
+    Box→goal pairing within each character: optimal min-cost matching via the
+    Kuhn-Munkres (Hungarian) algorithm — total cost is minimised, not just per
+    greedy step. Pair→agent assignment: color-eligible, load-balanced.
 
     Returns dict {agent_id: [(box_r, box_c, goal_r, goal_c, char), ...]}.
     """
@@ -61,35 +61,27 @@ def assign(
     for br, bc, bch in boxes:
         boxes_by_char.setdefault(bch, []).append((br, bc))
 
-    # Build (box, goal) pairs for each character, matched greedily by BFS dist
+    # Optimal box→goal matching per character via Kuhn-Munkres
     pairs: list[tuple[int, int, int, int, str]] = []  # (br, bc, gr, gc, char)
 
     for char, goal_positions in goals_by_char.items():
         if char not in boxes_by_char:
             continue
-        rem_goals = list(goal_positions)
-        rem_boxes = list(boxes_by_char[char])
+        box_positions = boxes_by_char[char]
 
-        # Greedy min-cost matching
-        while rem_boxes and rem_goals:
-            best: tuple[int, int, int, int] | None = None
-            best_cost = float("inf")
+        # Cost matrix: cost[i][j] = BFS dist from box_i to goal_j
+        cost = [
+            [dist_map.dist(g[0], g[1], b[0], b[1]) for g in goal_positions]
+            for b in box_positions
+        ]
 
-            for br, bc in rem_boxes:
-                for gr, gc in rem_goals:
-                    d = dist_map.dist(gr, gc, br, bc)
-                    cost = d  # could also add agent-to-box cost, but box→goal dominates
-                    if cost < best_cost:
-                        best_cost = cost
-                        best = (br, bc, gr, gc)
+        # Optimal min-cost assignment (handles rectangular: m boxes, n goals)
+        matching = _kuhn_munkres(cost)
 
-            if best is None:
-                break
-
-            br, bc, gr, gc = best
+        for box_idx, goal_idx in matching.items():
+            br, bc = box_positions[box_idx]
+            gr, gc = goal_positions[goal_idx]
             pairs.append((br, bc, gr, gc, char))
-            rem_boxes.remove((br, bc))
-            rem_goals.remove((gr, gc))
 
     # Assign each pair to the eligible agent with fewest current tasks
     for br, bc, gr, gc, char in pairs:
@@ -100,10 +92,78 @@ def assign(
         ]
         if not eligible:
             continue
-        # Load-balance: fewest tasks wins
         best_agent = min(eligible, key=lambda a: len(result[a.agent_id]))
         result[best_agent.agent_id].append((br, bc, gr, gc, char))
 
+    return result
+
+
+def _kuhn_munkres(cost: list[list[int]]) -> dict[int, int]:
+    """
+    Kuhn-Munkres (Hungarian) algorithm — O(n^3) optimal min-cost assignment.
+
+    Input: cost[i][j] = cost of assigning row i to column j.
+    Output: {row_idx: col_idx} mapping each row to its assigned column.
+
+    Rectangular inputs are handled by internal padding with a large sentinel;
+    the returned dict only contains real (row, col) pairs.
+    """
+    if not cost or not cost[0]:
+        return {}
+    n = len(cost)
+    m = len(cost[0])
+    size = max(n, m)
+    BIG = 10 ** 12  # larger than any real BFS distance (which caps at INF=10^9)
+    INF = float("inf")
+
+    # Pad to square
+    c = [[cost[i][j] if i < n and j < m else BIG for j in range(size)] for i in range(size)]
+
+    # 1-indexed potentials and assignment arrays
+    u = [0] * (size + 1)
+    v = [0] * (size + 1)
+    p = [0] * (size + 1)   # p[j] = row currently assigned to col j (0 = unassigned)
+    way = [0] * (size + 1)
+
+    for i in range(1, size + 1):
+        p[0] = i
+        j0 = 0
+        minv = [INF] * (size + 1)
+        used = [False] * (size + 1)
+        while True:
+            used[j0] = True
+            i0 = p[j0]
+            delta = INF
+            j1 = -1
+            for j in range(1, size + 1):
+                if not used[j]:
+                    cur = c[i0 - 1][j - 1] - u[i0] - v[j]
+                    if cur < minv[j]:
+                        minv[j] = cur
+                        way[j] = j0
+                    if minv[j] < delta:
+                        delta = minv[j]
+                        j1 = j
+            for j in range(size + 1):
+                if used[j]:
+                    u[p[j]] += delta
+                    v[j] -= delta
+                else:
+                    minv[j] -= delta
+            j0 = j1
+            if p[j0] == 0:
+                break
+        while j0 != 0:
+            j1 = way[j0]
+            p[j0] = p[j1]
+            j0 = j1
+
+    # Extract only real (row, col) assignments — skip padded entries
+    result: dict[int, int] = {}
+    for j in range(1, size + 1):
+        i = p[j]
+        if 1 <= i <= n and j <= m:
+            result[i - 1] = j - 1
     return result
 
 

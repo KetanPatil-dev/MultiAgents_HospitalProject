@@ -111,11 +111,11 @@ class Agent:
     def replan(self, joint_state: "State", timestep: int) -> bool:
         """
         Compute a new plan for the first remaining task (or agent_goal).
-        Tries IW(1) first (fast), falls back to A* if IW fails.
+        Tries constraint-aware A* on the real state first; falls back to
+        ghost A* (other agents invisible) and then obstacle-clear.
         Returns True on success, False if no plan found.
         """
         from searchclient.planner.astar import solve
-        from searchclient.planner.iw import iw_solve
 
         # Block other agents' current positions for a few timesteps so replanned
         # paths don't immediately step into occupied cells.
@@ -150,17 +150,17 @@ class Agent:
                 self._plan_index = 0
                 return True
 
-            # Try IW(1) first — fast and considers other agents via constraints
-            plan = iw_solve(
+            # First try: constraint-aware A* on the real joint state.
+            plan = solve(
                 state=joint_state,
                 agent_id=self.agent_id,
-                subgoals=[(box_r, box_c, goal_r, goal_c, box_char)],
-                k=1,
+                goal=(box_r, box_c, goal_r, goal_c, box_char),
                 constraints=runtime_constraints,
+                dist_map=self.dist_map,
             )
 
-            # A* fallback: ghost state + empty constraints = no time-indexing,
-            # bounded search, guaranteed termination in large levels.
+            # Ghost A* fallback: other agents invisible so A* can find a
+            # topological path. Runtime conflict resolution forces them to yield.
             if plan is None:
                 ghost = _ghost_state_for_nav(joint_state, self.agent_id)
                 plan = solve(
