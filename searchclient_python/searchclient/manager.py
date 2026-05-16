@@ -196,15 +196,18 @@ class Manager:
                 print(f"  HCA* preplan errored ({e}); falling back to reactive.", file=sys.stderr, flush=True)
                 traceback.print_exc(file=sys.stderr)
 
-        # Step 1g: Joint A* — for small levels (≤2 agents, ≤450 cells), try the
-        # optimal joint state-space search. If it succeeds, we use that plan
-        # instead of the reactive system. (_joint_plan already initialized above.)
-        if profile.num_agents <= 2 and n_cells <= 450:
+        # Step 1g: Joint A* — for small levels (≤2 agents, ≤450 cells, AND
+        # ≤4 plannable boxes), try the optimal joint state-space search.
+        # Box count matters because the joint state space scales with
+        # box-position combinations, not just agent positions.
+        n_boxes = len(profile.real_boxes)
+        if (profile.num_agents <= 2 and n_cells <= 450 and n_boxes <= 4):
             print(
-                f"Trying Joint A* (small level: {profile.num_agents} agents, {n_cells} cells).",
+                f"Trying Joint A* (small level: {profile.num_agents} agents, "
+                f"{n_cells} cells, {n_boxes} boxes).",
                 file=sys.stderr, flush=True,
             )
-            joint_actions = self._joint_astar_plan(initial_state)
+            joint_actions = self._joint_astar_plan(initial_state, time_budget_s=5.0)
             if joint_actions is not None:
                 self._joint_plan = joint_actions
                 print(
@@ -2336,8 +2339,16 @@ class Manager:
     # Joint A* (ported from felix/structure — optimal for ≤2 agent levels)
     # ------------------------------------------------------------------
 
-    def _joint_astar_plan(self, initial_state: State) -> list[list[Action]] | None:
-        """A* over the joint state space — optimal but only tractable for small levels."""
+    def _joint_astar_plan(
+        self, initial_state: State, time_budget_s: float = 5.0,
+    ) -> list[list[Action]] | None:
+        """A* over the joint state space — optimal but only tractable for small levels.
+
+        Bounded by both a state cap AND a wall-clock budget so we can't hang
+        forever on levels where the joint space is large but the gating
+        heuristics let it through (e.g. 2 agents + 13 boxes = combinatorial blow-up).
+        """
+        import time
         assert self.profile is not None
         n_agents = self.profile.num_agents
         max_closed = (
@@ -2345,6 +2356,7 @@ class Manager:
             else _JOINT_MAX_CLOSED_3 if n_agents <= 3
             else _JOINT_MAX_CLOSED
         )
+        deadline = time.time() + time_budget_s
 
         h0 = self._joint_h(initial_state)
         if h0 >= max_closed:
@@ -2359,6 +2371,14 @@ class Manager:
         while heap:
             if len(closed) >= max_closed:
                 print(f"  Joint A*: hit {max_closed} state limit.", file=sys.stderr, flush=True)
+                return None
+            # Wall-clock check every 1000 expansions to keep overhead low.
+            if (counter & 0x3FF) == 0 and time.time() >= deadline:
+                print(
+                    f"  Joint A*: time budget {time_budget_s:.1f}s exhausted "
+                    f"({len(closed)} closed) — giving up.",
+                    file=sys.stderr, flush=True,
+                )
                 return None
 
             _, _, node = heapq.heappop(heap)
