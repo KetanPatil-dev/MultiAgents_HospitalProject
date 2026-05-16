@@ -934,6 +934,7 @@ class Manager:
                 managed_to_swap = self._swap_task_with_obstacle(
                     agent.agent_id,
                     box_obstacles[0],
+                    state=joint_state,
                 )
                 if managed_to_swap and agent.task is not None:
                     current_task = agent.task
@@ -1678,16 +1679,16 @@ class Manager:
         self,
         agent_id: int,
         obstacle: tuple[int, int, Color, bool, str],
+        state: "State | None" = None,
     ) -> bool:
         """
-        Swap current task with an obstacle task if possible.
+        Swap current task with an obstacle task (same-colour case): agent
+        re-assigns itself to clear the blocking box, deferring its original
+        task back to the colour-group queue.
 
-        Args:
-            agent_id: ID of the agent with the failed task
-            failed_task: The task that failed to plan
-            obstacle: (obs_r, obs_c, obs_color, obstacle_after_box, obstacle_type) position and color of the blocking box
-
-
+        Cycle detection: if this same (agent, box_char) has been swap-cleared
+        3+ times in the recent window, refuse and route the agent to an
+        escape cell. Same Plan-B mechanism as cross-colour cycle refusal.
         """
         assert self.profile is not None
 
@@ -1698,6 +1699,47 @@ class Manager:
             file=sys.stderr,
             flush=True,
         )
+
+        # Cycle detection for same-colour swap thrashing. We only count
+        # recent swaps where the obstacle was at the SAME (obs_r, obs_c)
+        # — distinct positions mean the previous swap actually moved
+        # the box, which counts as progress, not a cycle.
+        box_char_check = State.get_box_char_from_color(obs_color)
+        if box_char_check is not None:
+            recent = sum(
+                1 for s in self.negotiations
+                if (self.timestep - s.t_initiated) < 30
+                and s.requester == agent_id
+                and s.granter == agent_id
+                and s.obstacle_box == box_char_check
+                and s.obstacle_pos == (obs_r, obs_c)
+            )
+            if recent >= 3:
+                print(
+                    f"  Same-color swap cycle detected: Agent {agent_id} over "
+                    f"box {box_char_check} ({recent}x); refusing further swaps.",
+                    file=sys.stderr, flush=True,
+                )
+                # Plan-B: escape cell.
+                if state is not None:
+                    rot = self.agents_escape_rotation.get(agent_id, 0)
+                    self.agents_escape_rotation[agent_id] = rot + 1
+                    escape = self._find_escape_cell(state, agent_id, rotation=rot)
+                    if escape is not None:
+                        ag = self.agents[agent_id]
+                        if ag.agent_goal is not None:
+                            ag._pending_agent_goal = ag.agent_goal
+                        ag.agent_goal = escape
+                        ag.constraints = set()
+                        ag._plan = []
+                        ag._plan_index = 0
+                        self.agents_awaiting_other_agent[agent_id] = None
+                        ag.awaiting_cnt = 0
+                        print(
+                            f"    Plan-B: Agent {agent_id} routed to escape cell {escape}.",
+                            file=sys.stderr, flush=True,
+                        )
+                return False
 
         current_task = self.agents[agent_id].task
         if current_task is None:
@@ -1891,6 +1933,19 @@ class Manager:
                 file=sys.stderr,
                 flush=True,
             )
+
+            # Record same-colour swap in the negotiation log so the cycle
+            # detector can refuse repeated swaps over the same box.
+            if new_task.box_char is not None:
+                self._record_swap(
+                    requester=agent_id,
+                    granter=agent_id,
+                    obstacle_box=new_task.box_char,
+                    obstacle_pos=(obs_r, obs_c),
+                    original_task=current_task,
+                    new_task=new_task,
+                    same_color=True,
+                )
 
             return True
 
