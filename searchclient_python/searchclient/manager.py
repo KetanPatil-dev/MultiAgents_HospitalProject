@@ -78,6 +78,10 @@ class Manager:
         # time _pick_recovery_move fires so consecutive nudges for the same
         # agent rotate through cardinal directions deterministically.
         self.agents_nudge_rotation: dict[int, int] = {}
+        # Per-agent rotation counter for the escape-cell selection. Used by
+        # Plan-B after negotiation cycle refusal so consecutive triggers
+        # don't keep sending the agent to the same cell.
+        self.agents_escape_rotation: dict[int, int] = {}
         # Rolling history of joint-state hashes for cycle detection.
         # When the same hash appears N+ times in the window, we're in a deadlock.
         self._state_history: deque = deque(maxlen=30)
@@ -116,6 +120,7 @@ class Manager:
         }
         self.agents_no_plan_cnt = {agent.agent_id: 0 for agent in self.agents}
         self.agents_nudge_rotation = {agent.agent_id: 0 for agent in self.agents}
+        self.agents_escape_rotation = {agent.agent_id: 0 for agent in self.agents}
         self._sync_agent_positions(initial_state)
 
         # Initialize task lists for each agent color
@@ -1525,7 +1530,9 @@ class Manager:
 
         # Cycle detection: if this exact (requester, granter, box) has been
         # swapped 3+ times in the recent window, the negotiation chain is in
-        # oscillation — refuse further swaps to break the cycle.
+        # oscillation — refuse further swaps to break the cycle. Plan-B:
+        # send the requester to an escape cell so the topology has a chance
+        # to change before another swap is attempted.
         if box_char is not None and requester_id is not None:
             cycle_count = self._recent_swap_count(
                 requester=requester_id,
@@ -1539,6 +1546,27 @@ class Manager:
                     f"refusing further swaps.",
                     file=sys.stderr, flush=True,
                 )
+                # Plan-B: route the requester to an escape cell. Rotate the
+                # direction bias on consecutive triggers so the agent isn't
+                # sent to the same cell every time.
+                requester = self.agents[requester_id]
+                if state is not None:
+                    rot = self.agents_escape_rotation.get(requester_id, 0)
+                    self.agents_escape_rotation[requester_id] = rot + 1
+                    escape = self._find_escape_cell(state, requester_id, rotation=rot)
+                    if escape is not None:
+                        if requester.agent_goal is not None:
+                            requester._pending_agent_goal = requester.agent_goal
+                        requester.agent_goal = escape
+                        requester.constraints = set()
+                        requester._plan = []
+                        requester._plan_index = 0
+                        self.agents_awaiting_other_agent[requester_id] = None
+                        requester.awaiting_cnt = 0
+                        print(
+                            f"    Plan-B: Agent {requester_id} routed to escape cell {escape}.",
+                            file=sys.stderr, flush=True,
+                        )
                 return False
 
         clear_goal = self._find_obs_clear_goal(obs_r, obs_c, state)
@@ -2518,10 +2546,14 @@ class Manager:
     # Escape cell (ported from felix/structure — graceful deadlock recovery)
     # ------------------------------------------------------------------
 
-    def _find_escape_cell(self, joint_state: State, agent_id: int) -> tuple[int, int] | None:
+    def _find_escape_cell(
+        self, joint_state: State, agent_id: int, rotation: int = 0,
+    ) -> tuple[int, int] | None:
         """BFS outward from agent's current position to find a safe escape cell.
-        Returns a cell ≥6 steps away that is clear of walls/boxes and not near other agents.
-        Direction bias by `agent_id % 4` helps spread escaping agents apart."""
+        Returns a cell ≥6 steps away that is clear of walls/boxes and not near
+        other agents. Direction bias by `(agent_id + rotation) % 4` — pass a
+        non-zero `rotation` on consecutive calls so the same agent gets a
+        different escape cell each time."""
         ar = joint_state.agent_rows[agent_id]
         ac = joint_state.agent_cols[agent_id]
         other_positions = {
@@ -2535,7 +2567,7 @@ class Manager:
                     blocked_area.add((r + dr, c + dc))
 
         dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
-        n = agent_id % 4
+        n = (agent_id + rotation) % 4
         ordered_dirs = dirs[n:] + dirs[:n]
 
         walls = State.walls
