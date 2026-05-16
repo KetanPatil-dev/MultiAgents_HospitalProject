@@ -367,5 +367,201 @@
 
 
 ================================================================================
+ 11. PREVIOUS-YEARS COMPETITION SWEEP  (added 2026-05-16)
+     headless sweep, 120 s timeout per level, no GUI
+================================================================================
+
+    Subset:  previous_years_levels/complevels/*.lvl
+    Count:   47 levels (legacy competition submissions, 2020-2025)
+    Result:  6 / 47 solved   =   12.8 %
+    Runtime: 76 minutes wall clock (≈ 97 s per level avg)
+
+    THE 6 SOLVES
+    ------------
+        name          solved   actions   time
+        ------------  ------   -------   -----
+        Ccropper      Yes        25      0.030 s
+        crayCray      Yes        91      5.495 s
+        MAzonakis     Yes       129     42.517 s
+        pooh          Yes        86      0.049 s
+        VNN           Yes        53      0.106 s
+        warehouse     Yes        76      0.148 s
+
+    THE 41 FAILURES — three buckets matching §7's failure patterns
+    --------------------------------------------------------------
+
+      Bucket A1 — INSTANT CRASH ("0 actions, 0.000 s"):  2 levels
+            MAchoupo2, sigMAS
+        Same pattern as the SA instant-crash cluster. Single bug likely
+        unlocks all (SA + MA combined ≈ 22 levels).
+
+      Bucket B1 — MAX_STEPS NOOP LOOP (19,500 actions emitted):  5 levels
+            AIMAS7, GHandDirt, MAybetwo, noone, PFarthing
+        Client never produces a productive first plan; nudges cycle.
+        These are levels where cross-agent passage is the bottleneck and
+        the obstacle-swap layer (box-centric) doesn't trigger.
+
+      Bucket C1 — STUCK MID-EXECUTION (hit 120 s timeout):  34 levels
+            AMC, BigSplit, ClosedAI, CphAirprt, DASH, DatzCrazy,
+            DECrunchy, doggy, donkeyK, EpicfAIl, GroupEZ, help, ISO,
+            jAIl, Lily, LiteralAI, MADS, MAGiC, MArtians, Medibots,
+            merRAM, Minchia, mosAIc, NameHere, pacMAn, PokeNOM,
+            QRscammer, rooMbA, Spiraling, TBSTANS1, TeamAgent,
+            TheGate, TourDeDTU, ZOOM
+        Make partial progress (4-11,705 actions before deadlock) then
+        stall. This is the dominant failure mode and the place where
+        targeted fixes have the most leverage.
+
+
+================================================================================
+ 12. POSSIBLE WAYS TO SOLVE THE FAILURES  (per-bucket fix proposals)
+================================================================================
+
+  --- BUCKET A1: INSTANT CRASH (2 levels here, ~20 SA levels, total ≈22) ---
+
+  Likely cause: an unhandled level feature crashes during setup —
+  most probably either:
+    (i)   the level uses a colour name our parser doesn't recognise,
+    (ii)  the level has a box-character that has no corresponding goal
+          AND the level is structured so the "deco box corridor-
+          clearing injection" raises an AssertionError,
+    (iii) Hungarian receives an empty / shape-mismatched cost matrix
+          for a colour group with no plannable boxes.
+
+  Recommended fix (highest leverage in the whole project, ~2 hours):
+      Run MAchoupo2 (smaller than sigMAS) with full stderr capture.
+      Tail the last 20 lines before exit; the Python traceback names
+      the file + line + exception. Patch the offending assumption.
+      Re-run; if MAchoupo2 solves, re-run all 22 instant-crash levels.
+
+  Estimated payoff: 0-22 levels unlocked depending on whether the
+  bug is shared (likely shared based on uniform "0 actions" signature).
+
+
+  --- BUCKET B1: MAX_STEPS NOOP LOOP (5 levels) ---
+
+  Likely cause: every agent's individual A* fails (CBS excludes them
+  all), HCA* also fails, and reactive preplanning detects only AGENT
+  obstacles (not box obstacles), which our negotiation layer doesn't
+  resolve. The stuck-recovery nudge bumps an agent every 15 turns but
+  the global topology never opens up.
+
+  Recommended fix #1 — Agent-as-obstacle negotiation (~6 hours):
+      When agent A's A* fails because agent B occupies the only path,
+      route through a new mechanism analogous to box-obstacle swap:
+          (a) detect agent-as-obstacle in _find_obstacles
+          (b) if obstacle is agent B with NO plan: command B to take
+              a move IN the same direction A wants (so B "yields by
+              continuing", clearing the cell after one turn)
+          (c) if B has a plan: A waits one turn with a (cell, t)
+              constraint and tries again
+      This is the MAPF "agent push" pattern, well-known in literature.
+
+  Recommended fix #2 — Bigger anytime CBS budget for these levels (~30 min):
+      Current cap schedule is (50, 200, 800, 3000) under a 5 s budget.
+      The competition allows 180 s. Allow a much larger schedule
+      (50, 500, 5000, 30000) under a 30 s setup budget. Pure runtime
+      change, no algorithmic risk. Likely unlocks 1-3 of these levels.
+
+  Estimated combined payoff: 3-5 levels unlocked.
+
+
+  --- BUCKET C1: STUCK MID-EXECUTION (34 levels — the big bucket) ---
+
+  Likely causes (multiple contributing):
+    (i)   Negotiation cycle detector refuses a swap then has no Plan B.
+          Agents go idle. Already on the fix list (§8 Fix 4).
+    (ii)  Box-blocking-box chokepoint not detected because the BFS-
+          with-cell-removed analysis is run ONCE at setup; subsequent
+          state changes can create new chokepoints we never see.
+    (iii) Joint A* is gated to ≤2 agents AND ≤450 cells; many of these
+          levels are 3-5 agents AND ≤450 cells, where Joint A* would
+          actually work but isn't tried.
+    (iv)  HCA*'s rigid priority order (low-id first) is bad for some
+          topologies; the alternative-priority rotation in §3 of
+          MANAGER_FLOW.md exists in spirit but the time budget on
+          reordering is too tight.
+
+  Recommended fix #3 — Plan-B after negotiation refusal (~3 hours):
+      When _recent_swap_count refuses, instead of going idle:
+          - Find an escape cell ≥6 steps from the contested zone
+          - Set it as the agent's temp goal
+          - Use the existing _find_escape_cell (already in code)
+      Already mentioned in §8. Single highest priority for this bucket.
+
+  Recommended fix #4 — Re-run chokepoint analysis mid-game (~4 hours):
+      After every K turns OR after every box delivery, re-execute
+      _compute_chokepoints on the CURRENT state. Newly-created
+      chokepoints get deferred. Modest extra compute (~50 ms/call on
+      WardRush-sized levels).
+
+  Recommended fix #5 — Extend Joint A* gating (~1 hour):
+      Currently  num_agents <= 2  AND  n_cells <= 450.
+      Try         num_agents <= 3  AND  n_cells <= 300
+      OR          num_agents <= 4  AND  n_cells <= 150
+      Joint A*'s 500k-state cap on 3-agent levels is tractable on
+      small grids. Could unlock several small-but-tricky levels in
+      this bucket.
+
+  Recommended fix #6 — Time-budgeted priority reorder (~3 hours):
+      HCA* currently runs once with priority = agent_id order. After
+      the initial pipeline, if any agent failed and 30 s of wall-clock
+      budget remains, rotate priority orders (shifts of N, and "failed
+      agents first") and re-run HCA* on the rotation. Keep the best.
+
+  Estimated combined payoff for Bucket C1: 8-15 levels unlocked.
+
+
+================================================================================
+ 13. UPDATED OVERALL COVERAGE TALLY
+================================================================================
+
+    Including the previous-years sweep on top of §1's bundled tally:
+
+    Suite                              Solved     %
+    --------------------------------   -------    -----
+    MAsimple                           5 / 5      100.0 %
+    MAPF                               6 / 12      50.0 %
+    Thomas Apartment (MA)              11 / 15     73.3 %
+    Other bundled MA tested            5 / 12      41.7 %
+    MA hospital / bispebjerg           0 / 2        0.0 %
+    Custom (own variants)              1 / 1      100.0 %
+    SA (single-agent, ungrade)         32 / 63     50.8 %
+    PREVIOUS-YEARS COMPETITION         6 / 47      12.8 %
+    --------------------------------   -------    -----
+    GRAND TOTAL (all tested)           66 / 157    42.0 %
+
+    Multi-agent excluding own + tuned   23 / 90    25.6 %
+
+    The headline number that matters most for the grade narrative:
+        Bundled-corpus MA coverage:     ~50 %
+        Previous-years competition MA:  ~13 %
+
+    Citing both honestly is the right move for the video.
+    Citing just the higher number would be overclaiming.
+
+
+================================================================================
+ 14. PRIORITY ORDER (UPDATED with previous-years data)
+================================================================================
+
+    Two days remain until the May 18 competition release. After May 18
+    the priority shifts to whatever the released levels actually need.
+    Before then, the impact-per-hour ranking is:
+
+      1. Diagnose Bucket A1 (instant crash)         ~ 2 h    unlocks 0-22
+      2. Plan-B after negotiation refusal            ~ 3 h    unlocks 3-8 in C1
+      3. Extend Joint A* gating to 3-4 agents        ~ 1 h    unlocks 1-4 in C1
+      4. Agent-as-obstacle negotiation (Bucket B1)   ~ 6 h    unlocks 3-5
+      5. Mid-game chokepoint re-analysis             ~ 4 h    unlocks 2-5
+      6. Time-budgeted priority reorder              ~ 3 h    unlocks 1-3
+      7. Anytime CBS bigger schedule under 30 s      ~ 30 min unlocks 1-3
+
+    Items 1, 2, 3, and 7 are the "Sunday afternoon" set — high payoff,
+    low risk, total ~7 hours. Items 4, 5, 6 are larger and riskier;
+    consider them only if items 1-3 land cleanly with time to spare.
+
+
+================================================================================
  END OF FILE
 ================================================================================
