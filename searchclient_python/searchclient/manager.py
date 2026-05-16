@@ -201,18 +201,29 @@ class Manager:
                 print(f"  HCA* preplan errored ({e}); falling back to reactive.", file=sys.stderr, flush=True)
                 traceback.print_exc(file=sys.stderr)
 
-        # Step 1g: Joint A* — for small levels (≤2 agents, ≤450 cells, AND
-        # ≤4 plannable boxes), try the optimal joint state-space search.
-        # Box count matters because the joint state space scales with
-        # box-position combinations, not just agent positions.
+        # Step 1g: Joint A* — for small levels, try the optimal joint
+        # state-space search. Two tiers:
+        #   • ≤2 agents, ≤450 cells, ≤4 boxes — generous budget (5s)
+        #   • 3 agents, ≤200 cells, ≤2 boxes — tight budget (3s)
+        # The 3-agent tier unlocks a small set of micro-levels where joint
+        # planning is tractable but the reactive system over-coordinates.
         n_boxes = len(profile.real_boxes)
-        if (profile.num_agents <= 2 and n_cells <= 450 and n_boxes <= 4):
+        joint_eligible = False
+        budget = 5.0
+        if profile.num_agents <= 2 and n_cells <= 450 and n_boxes <= 4:
+            joint_eligible = True
+            budget = 5.0
+        elif profile.num_agents == 3 and n_cells <= 200 and n_boxes <= 2:
+            joint_eligible = True
+            budget = 3.0
+
+        if joint_eligible:
             print(
-                f"Trying Joint A* (small level: {profile.num_agents} agents, "
-                f"{n_cells} cells, {n_boxes} boxes).",
+                f"Trying Joint A* ({profile.num_agents} agents, "
+                f"{n_cells} cells, {n_boxes} boxes, budget {budget}s).",
                 file=sys.stderr, flush=True,
             )
-            joint_actions = self._joint_astar_plan(initial_state, time_budget_s=5.0)
+            joint_actions = self._joint_astar_plan(initial_state, time_budget_s=budget)
             if joint_actions is not None:
                 self._joint_plan = joint_actions
                 print(
@@ -458,11 +469,16 @@ class Manager:
             print("  CBS: no tasks to plan.", file=sys.stderr, flush=True)
             return
 
+        # CBS budget. CBS is fast when it works (sub-second on most
+        # solvable levels). 3 s wall-clock is enough for the cheap caps;
+        # if CBS hasn't solved by then, falling through to HCA*/Joint A*
+        # is cheaper than burning more time inside CBS.
         plans = anytime_cbs_solve(
             state=initial_state,
             agent_goals=agent_goals,
             dist_map=self.dist_map,
-            time_budget_s=5.0,
+            time_budget_s=3.0,
+            cap_schedule=(50, 200, 800, 3000, 10000),
         )
 
         if plans is None:
