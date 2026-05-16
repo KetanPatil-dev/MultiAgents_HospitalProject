@@ -2452,10 +2452,41 @@ class Manager:
         no wall-clock, only the agent's id and prior call history.
         """
         candidates = [Action.MoveN, Action.MoveS, Action.MoveE, Action.MoveW]
+
+        # Informed pick: prefer cardinals that move the agent toward an
+        # escape cell (BFS-derived target in open space). This is the
+        # first-choice attempt; if no escape cell is found or all the
+        # informed picks are blocked, we fall back to the rotation
+        # below so the agent still makes SOME move.
+        escape = self._find_escape_cell(joint_state, agent_id)
+        if escape is not None:
+            ar = joint_state.agent_rows[agent_id]
+            ac = joint_state.agent_cols[agent_id]
+            er, ec = escape
+            dr = er - ar
+            dc = ec - ac
+            preferred: list[Action] = []
+            # Cardinals ordered by which one reduces row-distance first if
+            # the row gap is larger, else column-distance first.
+            if abs(dr) >= abs(dc):
+                if dr > 0: preferred.append(Action.MoveS)
+                elif dr < 0: preferred.append(Action.MoveN)
+                if dc > 0: preferred.append(Action.MoveE)
+                elif dc < 0: preferred.append(Action.MoveW)
+            else:
+                if dc > 0: preferred.append(Action.MoveE)
+                elif dc < 0: preferred.append(Action.MoveW)
+                if dr > 0: preferred.append(Action.MoveS)
+                elif dr < 0: preferred.append(Action.MoveN)
+            for action in preferred:
+                if joint_state.is_applicable(agent_id, action):
+                    return action
+
+        # Rotation fallback — informed pick was blocked or escape cell
+        # not available. Rotate through cardinals with a per-agent counter
+        # so we don't pick the same direction every time.
         rot = self.agents_nudge_rotation.get(agent_id, 0)
         self.agents_nudge_rotation[agent_id] = rot + 1
-        # Start from the rotated offset; bias by agent_id so different
-        # agents prefer different initial directions.
         start = (rot + agent_id) % 4
         ordered = candidates[start:] + candidates[:start]
         for action in ordered:
