@@ -10,7 +10,6 @@ Architecture:
 from __future__ import annotations
 
 import heapq
-import random
 import sys
 from collections import deque
 from dataclasses import dataclass, field
@@ -73,8 +72,12 @@ class Manager:
         self.color_tasks: dict[Color | None, ColorTasksTypedDict] = {}
         self.agents_awaiting_other_agent: dict[int, int | None] = {}
         # Per-agent count of consecutive turns with no plan + an open task.
-        # Used by stuck-agent recovery to inject a single-turn random nudge.
+        # Used by stuck-agent recovery to inject a single-turn nudge.
         self.agents_no_plan_cnt: dict[int, int] = {}
+        # Per-agent rotation counter for the recovery nudge. Incremented every
+        # time _pick_recovery_move fires so consecutive nudges for the same
+        # agent rotate through cardinal directions deterministically.
+        self.agents_nudge_rotation: dict[int, int] = {}
         # Rolling history of joint-state hashes for cycle detection.
         # When the same hash appears N+ times in the window, we're in a deadlock.
         self._state_history: deque = deque(maxlen=30)
@@ -112,6 +115,7 @@ class Manager:
             agent.agent_id: None for agent in self.agents
         }
         self.agents_no_plan_cnt = {agent.agent_id: 0 for agent in self.agents}
+        self.agents_nudge_rotation = {agent.agent_id: 0 for agent in self.agents}
         self._sync_agent_positions(initial_state)
 
         # Initialize task lists for each agent color
@@ -1009,17 +1013,12 @@ class Manager:
                     self.agents[obstacle_agent_id].task is not None
                     and len(self.agents[obstacle_agent_id]._plan) == 0
                 ):
-                    # Give the obstacle agent a single cardinal nudge to move
-                    # out of the way. Uses the seeded RNG (random.seed(50) at
-                    # client.py top) so runs are reproducible end-to-end.
+                    # Give the obstacle agent a single deterministic cardinal
+                    # nudge to move out of the way. Direction rotates per
+                    # consecutive call so we don't pick the same one twice.
                     obstacle_agent = self.agents[obstacle_agent_id]
-                    candidate_moves = [Action.MoveN, Action.MoveS, Action.MoveE, Action.MoveW]
-                    valid_moves = [
-                        a for a in candidate_moves
-                        if joint_state.is_applicable(obstacle_agent.agent_id, a)
-                    ]
-                    if valid_moves:
-                        chosen = random.choice(valid_moves)
+                    chosen = self._pick_recovery_move(joint_state, obstacle_agent.agent_id)
+                    if chosen is not None:
                         obstacle_agent._plan = [chosen]
                         obstacle_agent._plan_index = 0
                         print(
@@ -1902,11 +1901,10 @@ class Manager:
 
         # Stuck-agent recovery: agents that haven't been able to plan for
         # STUCK_THRESHOLD consecutive turns are given a single-turn cardinal
-        # nudge sampled from the seeded RNG (random.seed(50) at client.py
-        # entry). Reproducible across runs while ensuring distinct directions
-        # are tried on consecutive triggers.
+        # nudge from `_pick_recovery_move`. The nudge rotates through
+        # directions deterministically (no RNG), so consecutive triggers for
+        # the same agent always try different directions.
         STUCK_THRESHOLD = 15
-        nudge_dirs = [Action.MoveN, Action.MoveS, Action.MoveE, Action.MoveW]
         for agent in self.agents:
             if len(agent._plan) > 0 or agent.task is None:
                 self.agents_no_plan_cnt[agent.agent_id] = 0
@@ -1914,12 +1912,8 @@ class Manager:
             self.agents_no_plan_cnt[agent.agent_id] += 1
             if self.agents_no_plan_cnt[agent.agent_id] >= STUCK_THRESHOLD:
                 self.agents_no_plan_cnt[agent.agent_id] = 0
-                valid = [
-                    a for a in nudge_dirs
-                    if joint_state.is_applicable(agent.agent_id, a)
-                ]
-                if valid:
-                    chosen = random.choice(valid)
+                chosen = self._pick_recovery_move(joint_state, agent.agent_id)
+                if chosen is not None:
                     joint_action[agent.agent_id] = chosen
                     print(
                         f"  Agent {agent.agent_id}: stuck for {STUCK_THRESHOLD} turns, "
@@ -2438,6 +2432,36 @@ class Manager:
                         break
                 break  # only consider first unfinished task
         return total
+
+    # ------------------------------------------------------------------
+    # Recovery nudge — pick a single-turn cardinal Move to unstick an
+    # agent. Used by both the obstacle-unblock branch and the stuck-
+    # agent recovery branch in get_joint_action.
+    # ------------------------------------------------------------------
+
+    def _pick_recovery_move(
+        self, joint_state: State, agent_id: int,
+    ) -> "Action | None":
+        """Deterministic single-step nudge for an agent with no plan.
+
+        Rotates through cardinal directions (N → S → E → W) using a
+        per-agent counter, returning the first applicable Move. The
+        rotation guarantees that consecutive calls for the same agent
+        try different directions, so a single unfavourable choice does
+        not freeze the agent. Fully deterministic across runs: no RNG,
+        no wall-clock, only the agent's id and prior call history.
+        """
+        candidates = [Action.MoveN, Action.MoveS, Action.MoveE, Action.MoveW]
+        rot = self.agents_nudge_rotation.get(agent_id, 0)
+        self.agents_nudge_rotation[agent_id] = rot + 1
+        # Start from the rotated offset; bias by agent_id so different
+        # agents prefer different initial directions.
+        start = (rot + agent_id) % 4
+        ordered = candidates[start:] + candidates[:start]
+        for action in ordered:
+            if joint_state.is_applicable(agent_id, action):
+                return action
+        return None
 
     # ------------------------------------------------------------------
     # Escape cell (ported from felix/structure — graceful deadlock recovery)
