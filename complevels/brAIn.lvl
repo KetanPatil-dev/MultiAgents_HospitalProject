@@ -1,0 +1,117 @@
+#domain
+hospital
+#levelname
+brAIn
+#colors
+blue: 2,L
+red: 1,M
+orange: X,0,J,H,F,D,B,C,E,G,I,K
+cyan: N,3,O,4
+brown: 6,A
+grey: 7,Q,R
+green: P,5
+purple: S,8
+pink: 9,T
+#initial
++++++++++++++++++++++++++++++++++++++++++++++++++
++2          +         1   X                     +
++           +            X     X  XXXX XXX      +
++           +            X   XX XXX   XX XXX    +
++           +            X  XXX             X   +
++       LL  + MM        X   X     XX  XX    X   +
++           +            X  X    X  XX XXX   X  +
++                        XX X   X        X   X  +
++           +              XX   X        X   X  +
++           +              XXX  X   XX   XX X   +
++           +                X  X  X XXX  X  X  +
++           +                X  X XX   X  X  X  +
++           +               XX  X X    X   X X  +
++++++++++++++++++++++++++++X   X  X   NX  X  X  +
++6AAAAAAAAAAAAAAAAAAAAAA+XX   XX  X   XX  X   X +
++ AAAAAAAAAAAAAAAAAAAAA+X    X   X        X   X +
++AAAAAAAAAAAAAAAAAAAA++X  XXX  XX        X   XX +
++AAAAAAAAAAAAAAAAAAAA+X  X    X   XXXXXX X  X   +
++AAAAAAAAAAAAAAAAAAAA+X  XX XX    X    XXX  X   +
++AAAAAAAAAAAAAAAAAAAA +X  X XXXXXX          X   +
++AAAAAAAAAAAAAAAAAA+++XX XX  X      XX      X   +
+++AAAAAAAAAAAAAAAAA+XX   X         X  XXXX X    +
++X+++AAAAAAAAAAAAAA+X   X3 XXXXX  XX     XX     +
++ XXX+AAAAAAAAAAAAAA+X XXXXX    XX   XXX XX     +
++   XX++AAAAAAAAAAAA+X              X  X        +
++ + + XX+AAAAAAAAA++X++++++++++++++++++++++++++++
++      XX++++AAAA++X               7+          X+
++ + + + +XXX+AAAA+X                 +         X +
++          X++++A++X                +         X +
++ + + + + + XXX+++++X               +        XX +
++  P          XXXX++X               +        X  +
++ + + + + + + +  XX++X              +      XX   +
++                  XXX              +      X    +
++ + + + + + +O+ + + + XXXX          +     X     +
++                        XXX      QQ+   XXX     +
++ + + + + + + + + + + + + + X  RR QQ+   X       +
++                  5        XXRRR   +  X        +
++ + + + + + + + + + +AAAAAAA  XX    +           +
++                    A  0  A   X   XX           +
++ +O+ + +O+ + + + + +AJ+ + A    X X             +
++          P         AH+ + A     XX             +
++ + + + + + + + + + +AF+ + A                    +
++                    AD+ + A                    +
++ + + + + + + + + + +AB+ + A                    +
++    4               AC+ + A                    +
++ + + + + + + + + + +AE+ + A                    +
++             O      AG+ + A                    +
++ + + + + + + + + + +AI+ + A                    +
++    P             P AK+ + ASS     89         TT+
++++++++++++++++++++++++++++++++++++++++++++++++++
+#goal
++++++++++++++++++++++++++++++++++++++++++++++++++
++           +                                   +
++           +                                   +
++           +                                   +
++           +                                   +
++           +                                   +
++           +                                   +
++                          N                    +
++           +                                   +
++           +                                   +
++           +                                   +
++           +                                   +
++MM         +             LL                    +
++++++++++++++++++++++++++++                     +
++                       +                       +
++                      +                        +
++                    ++                         +
++                    +                          +
++                    +                          +
++                    6+                         +
++                  +++                          +
+++                 +                            +
++ +++              +                            +
++    +              +                           +
++     ++            +                           +
++ + +   +         ++ ++++++++++++++++++++++++++++
++        ++++    ++ QR              +T       SS +
++ + + + +   +    + QQR              +T          +
++           ++++ ++ QR              +           +
++ + + + + +    +++++ R              +           +
++        P        ++ R              +           +
++ + + + + + + +    ++               +           +
++                                   +           +
++ + + + + + + + + + +               +           +
++P   O    5                         +           +
++ + + + + + + + + + + + + +         +           +
++         4                         +           +
++ + + + + + + + + + +               +           +
++              O                                +
++ + + + + + + + + + +  + +B      7              +
++                      + +C                     +
++ + + + + + + + + + +  + +D                     +
++                P     + +E                     +
++ + + + +P+ + + + + +  + +F                     +
++                      + +G                     +
++ + + + + + + + + + +  + +H                     +
++                      + +I                     +
++ + + + + +O+ + + + +  + +J                     +
++O                     + +K                     +
++++++++++++++++++++++++++++++++++++++++++++++++++
+#end

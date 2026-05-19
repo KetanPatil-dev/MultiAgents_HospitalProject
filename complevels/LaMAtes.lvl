@@ -1,0 +1,113 @@
+#domain
+hospital
+#levelname
+LaMAtes
+#colors
+blue: 0,A,O
+red: 1,B,F
+pink: 2,C
+cyan: 3,D
+orange: E
+green: H
+lightblue: S
+grey: M
+brown: W
+#initial
+++++++++++++++++++++++++++++++++++++++++++++++++
++0  AA +1  BB +2  CC +3  DD      +    EE EEFFFF+
++   AA +   BB +   CC +   DD      + EEEE  EEFFFF+
++   AA +   BB +   CC +   DD            E EEEEFF+
++ ++++++ ++++++ ++++++ +++++++++++    EE  EEEFF+
++                                +   EE  E EEEE+
++ ++++++++++++++++++++ +++++++++ +      EE  EEE+
++                                +     EE  E   +
++++++ + + ++++ +++++++ +++++++++ +    EE  EE E +
++     + +       HH   +              S     E  EE+
++ HH  + +++    MMHH  +   HH      + SDS   EE   E+
++HHHM +   +     MM   +  HHHH     +  S         E+
++HHHM +++ +    HHHH  +  MHHH     +             +
++HHHM   + +   MMHHHH +  MHHH     +    S        +
++HHMM   + ++   MMMM  +  MHHH     +   SCS       +
++ MM   ++  ++++ WW   +  MHHH     +    S    S   +
++ WW  ++HH    + WW   +  MHHH  HH + S      SBS  +
++ WW+++HHHH   ++++++++  MMHH MHHH+SBS  S   S   +
++++++   MM    +          MM  MHHH+ S  SAS     ++
++     HHWWHH  + HHHHHH   WW   MM +     S     +M+
++    MMHHHHHH +HHHHHHHH  WW ++++++    +      +M+
++     MMWWMM  +MMWHHWH   WW HH   +   +M+  S  +M+
++       WW    + MMWWMM   WWMHHH  +  +MMM+SDS+MM+
++ HH HH WW    +   WW     WWMHHH  +  +MMM+ S +MM+
++HHHHHHHWW    +   WW     WW MM   + +MMMMM+ +MMM+
+++++++++++++++++++++++++++++++++ ++MMMMMMM++MMM+
++                           S     +MMMMMMM+MMMM+
++   ++      +++   +++++    SAS   +MMMMMMMMM+MMM+
++  +OS+    +SSS+      +     S   +MMMMMMMMMMM+MM+
++  +OS+    +SSS+    +++        +MMMMMMMMMMMMM+M+
++  +OS+    +SSS+    + S   S    +MMMMMMMMMMMMM+M+
++  +OS+   +AS+OS+   +SBS SCS  +MMMMMMMM+++MMM+++
++  +OS++  +ASSSS+   + S   S  +MMMMMMMMM+ +MMM+ +
++  +OSSS+ +AS+SS+   ++++++++++++++++++++ +++++ +
++  +AAAA+ +AA+OO+                              +
++   ++++   ++ ++                               +
++                                              +
++   +++ +++    +++    ++++   +++++    +++      +
++  +BEE+FEE+  +EEE+  +FEEE+ +FEEEE+  +EEE+     +
++  +BEE+FEE+  +EEE+  +FFEE+ +FEFFF+ +EE++E+    +
++  +BEE+FEE+  +EEE+   +FE+  +FE+++  +EEE++     +
++  +BEEEEEE+ +FE+FE+  +FE+  +FEFF+   +EEE+     +
++  +BEEEEEE+ +FEEEE+  +FE+  +FE+++   ++EEE+    +
++  +BE+B+FE+ +BE+EE+  +BE+  +BEEEE+ +F++EE+    +
++  +BB+B+FF+ +BF+FF+  +BE+  +BFFFF+  +BBB+     +
++   ++ + ++   ++ ++    ++    +++++    +++      +
++                                              +
+++++++++++++++++++++++++++++++++++++++++++++++++
+#goal
+++++++++++++++++++++++++++++++++++++++++++++++++
++      +      +      +           +             +
++      +      +      +           +             +
++      +      +      +                         +
++0++++++1++++++2++++++3+++++++++++             +
++                                +             +
++ ++++++++++++++++++++ +++++++++ +             +
++                                +             +
++++++ + + ++++ +++++++ +++++++++ +             +
++     + +            +                         +
++     + +++          +           +             +
++     +   +C         +           +             +
++     +++ +C         +           +             +
++       + +CC        +           +             +
++     AA+ ++CC       +           +             +
++    AA++  ++++      +           +             +
++   AA++      +      +           +             +
++   +++       ++++++++           +             +
++++++         +                  +            ++
++             +                  +           + +
++             +             ++++++    +      + +
++             +                  +   + +     + +
++            B+        DD        +  +   +   +  +
++           BB+        DD        +  +   +   +  +
++          BBB+        DD        + +     + +   +
+++++++++++++++++++++++++++++++++ ++       ++   +
++                                 +       +    +
++   ++      +++   +++++          +         +   +
++  +  +    +   +      +         +           +  +
++  +  +    +   +    +++        +             + +
++  +  +    +   +    +          +             + +
++  +  +   +  +  +   +         +        +++   +++
++  +  ++  +     +   +        +         + +   + +
++  +    + +  +  +   ++++++++++++++++++++ +++++ +
++  +    + +  +  +                              +
++   ++++   ++ ++                               +
++                                              +
++   +++ +++    +++    ++++   +++++    +++      +
++  +   +   +  +   +  +    + +     +  +   +     +
++  +   +   +  +   +  +    + +     + +  ++ +    +
++  +   +   +  +   +   +  +  +  +++  +   ++     +
++  +       + +  +  +  +  +  +    +   +   +     +
++  +       + +     +  +  +  +  +++   ++   +    +
++  +  + +  + +  +  +  +  +  +     + + ++  +    +
++  +  + +  + +  +  +  +  +  +     +  +   +     +
++   ++ + ++   ++ ++    ++    +++++    +++      +
++                                              +
+++++++++++++++++++++++++++++++++++++++++++++++++
+#end

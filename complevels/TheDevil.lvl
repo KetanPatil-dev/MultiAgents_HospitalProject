@@ -1,0 +1,52 @@
+#domain
+hospital
+#levelname
+TheDevil
+#colors
+blue: 3, S , A 
+green: 1, T, W, O, 2, P, R
+red: X
+pink: 0, D, E, V, I, L
+#initial
+++++++++++++++++++++++++++++++++++++
+++XXXXX++++++++++XXXXXXXXXXXXXXXXXX+
+++X+++X++++++++++X          D    0X+
++XXXXXXX+++++++XXX                X+
++XXXXXXX+++++XXX    S       E     X+
++XXXXXXX+++XXX                    X+
++++++++++XXX                V     X+
++++++++XXX                        X+
++++++XXX      D             I     X+
++++XXX   A                        X+
++XXX                    XXXXLXXXXXX+
++X1     T      A      3X+++X X++++++
++X             W      X++++X X++++++
++X R              A  X+++++X X++++++
++X    W             X++++++X X++++++
++X           E   O X+++++XXX XXX++++
++X   P     R      X++++++X+X X+X++++
++X              2X+++++++X+X X+X++++
++XXXXXXXXXXXXXXXX++++++++X+X X+X++++
+++++++++++++++++++++++++++++++++++++
+#goal
+++++++++++++++++++++++++++++++++++++
+++XXXXX++++++++++XXXXXXXXXXXXXXXXXX+
+++X+++X++++++++++X                X+
++XXXXXXX+++++++XXX                X+
++XXXXXXX+++++XXX                  X+
++XXXXXXX+++XXX    S               X+
++++++++++XXX    R                 X+
++++++++XXX    A                   X+
++++++XXX    E                     X+
++++XXX    W                       X+
++XXX                    XXXX XXXXXX+
++X                     X+++X X++++++
++X                    X++++X X++++++
++X                   X+++++X X++++++
++X                  X++++++XDX++++++
++X     PRADA       X+++++XXXEXXX++++
++X                X++++++X+XVX+X++++
++X     TWO       X+++++++X+XIX+X++++
++XXXXXXXXXXXXXXXX++++++++X+XLX+X++++
+++++++++++++++++++++++++++++++++++++
+#end

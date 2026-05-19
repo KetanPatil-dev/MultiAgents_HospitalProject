@@ -1,0 +1,45 @@
+#domain
+hospital
+#levelname
+MAuseCat
+#colors
+red: 3,B,O, C
+blue: 1, A
+brown: G,E
+pink: 0, P,I
+green: 4, Y,R, S
+grey: 2, M, T
+orange: W, U
+#initial
+++++++++++++++++++++++++++++++++++++++++++++++
++0     MM     ++++++++++++GG     GG         1+
++2    MIMMMM  ++++++++++++GPG   GPG         4+
++3            ++++++++++++GPPGGGPPG          +
++             ++++++++++++G   G   G          +
++   MM        +++++++++++G YY   YY G         +
++  MIMMMM              WWG YB   BY G         +
++          WWWWWWWWWW  WWWG       G          +
++  WWW    WW           WWW G     G           +
++  W      W   WWWWWWWWWWWW  GG GG            +
++   WWWWWWW   W    WW   WW                   +
++       SSA     WW    W                      +
++++++++ ++WW    WW WW W             ++++++++++
++GROUP+  +WWWWW    WW   WWWW        +MAUSECAT+
+++++++++++++++++++++++++++++++++++++++++++++++
+#goal
+++++++++++++++++++++++++++++++++++++++++++++++
++             ++++++++++++                   +
++             ++++++++++++            MMMMIM +
++             ++++++++++++               MM  +
++             ++++++++++++                   +
++             +++++++++++             MMMMIM +
++                                        MM  +
++                             0              +
++                             2              +
++                             3              +
++                                            +
++ASS                                         +
++++++++ ++                          ++++++++++
++GROUP+41+                          +MAUSECAT+
+++++++++++++++++++++++++++++++++++++++++++++++
+#end

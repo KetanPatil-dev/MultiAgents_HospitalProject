@@ -24,6 +24,7 @@ import sys
 random.seed(50)
 
 from searchclient import memory
+from searchclient.action import Action
 from searchclient.level_parser import LevelParser
 from searchclient.manager import Manager
 
@@ -64,13 +65,25 @@ def main(args: argparse.Namespace) -> None:
         # Send joint action to server (one line: "act1|act2|...")
         print("|".join(a.name_ for a in joint_action), flush=True)
 
-        # Read server response (must drain stdin to avoid blocking server)
+        # Read server response. Format: "true|false|..." per agent.
+        # Server rejects an action when it conflicts with another or is
+        # inapplicable. We MUST mask rejected actions to NoOp before
+        # applying locally, otherwise the client's state mirror drifts
+        # from the server and is_done() can wrongly return True.
         response = server_messages.readline()
         if not response:
             break
 
-        # Advance local state mirror (always apply — manager already resolved conflicts)
-        current_state = current_state.result(joint_action)
+        accepted = [tok.strip().lower() == "true" for tok in response.strip().split("|")]
+        if len(accepted) == len(joint_action):
+            effective = [
+                a if accepted[i] else Action.NoOp
+                for i, a in enumerate(joint_action)
+            ]
+        else:
+            effective = joint_action
+
+        current_state = current_state.result(effective)
 
         t += 1
         if t % 500 == 0:

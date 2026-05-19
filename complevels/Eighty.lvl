@@ -1,0 +1,29 @@
+#domain
+hospital
+#levelname
+Eighty
+#colors
+blue: A,M,L,K,J,I,H,G,F,E,B,C,0,D,1
+#initial
+++++++++++++++++++++
++A       +MLKJIHGFE+
++B       +         +
++C      0+         +
++D       +         +
++        +         +
++        +         +
++        +        1+
++        +         +
+++++++++++++++++++++
+#goal
+++++++++++++++++++++
++    A   +         +
++    B   +         +
++    C   +         +
++    D   +MLKJIHGFE+
++        +         +
++        +         +
++        +         +
++        +         +
+++++++++++++++++++++
+#end

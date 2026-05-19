@@ -1,0 +1,35 @@
+#domain
+hospital
+#levelname
+ComMAndos
+#colors
+blue: A,0,5
+red: B,1,6
+green: 2,C
+lightblue: 4,E
+pink: 3,D
+#initial
++++++++++
++AB   + +
++BB1  + +
++       +
++  +02  +
++ C++   +
++       +
++6      +
++    4EE+
++5  3 ED+
++++++++++
+#goal
++++++++++
++     +A+
++     + +
++C      +
++  +    +
++  ++   +
++   D   +
++       +
++65     +
++       +
++++++++++
+#end

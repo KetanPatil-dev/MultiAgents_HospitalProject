@@ -1,0 +1,57 @@
+#domain
+hospital
+#levelname
+amogus
+#colors
+blue: 0,5,A
+purple: 1,B
+green: 2,3,C,D
+brown: W
+red: 4,E
+cyan: 6,G
+pink: 7,F
+#initial
++++++++++++++++++++
++2    C A  A D    +
++   B   A3 AAAAA  +
++ C     A   C     +
++WWWWWWWWWWWWWWWWW+
++   W    W1   D   +
++ W 0W D  CWC WCW +
++ BWW   C         +
++ W    W  WCDWW CD+
++   WCW  C W      +
++CDC C   W   CDW C+
++      W ADWC W   +
++CCCCCCCCCCCCCCCCC+
++4A  DE  B5A      +
++ A  DDC BAA      +
++ C  A   B        +
++        B        +
++++++++++++++++++++
++ 6   7 +         +
++ F+++G +         +
++++++++++++++++++++
+#goal
++++++++++++++++++++
++          AC     +
++   B   A     AA  +
++                 +
++        W    W  W+
++                 +
++                 +
++                 +
++          C  W   +
++                 +
++                 +
++           C WA  +
++CCCCCCCCCCCCCCCCC+
++  E             A+
++                 +
++                 +
++       4 A      A+
++++++++++++++++++++
++       +         +
++ G+++F +         +
++++++++++++++++++++
+#end

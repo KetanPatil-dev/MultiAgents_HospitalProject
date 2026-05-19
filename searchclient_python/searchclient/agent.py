@@ -56,10 +56,20 @@ class Agent:
         self._plan: list[Action] = []
         self._plan_index: int = 0
 
-        # Space-time constraints: (r, c, t) cells forbidden for this agent
+        # Space-time constraints: (r, c, t) cells forbidden for this agent.
+        # Local-time semantics: t is search-time (0 = agent's start state).
         self.constraints: set[tuple[int, int, int]] = set()
+        # Absolute-time constraints: (r, c, T) where T is the global timestep.
+        # Used by runtime conflict resolution — survives across replans so that
+        # a "don't enter cell X at turn 42" constraint actually blocks that
+        # cell at turn 42 regardless of how many times the agent replans.
+        self.abs_constraints: set[tuple[int, int, int]] = set()
         # Post-escape stagger: turns to wait before replanning box task after escape
         self._escape_stagger: int = 0
+        # Forced-NoOp timestamp: agent emits NoOp until self.manager.timestep >= this.
+        # Set by the conflict-resolution path to give the conflict winner time
+        # to actually clear the contested corridor.
+        self._noop_until: int = -1
         # When a nav-only agent is given a temporary escape cell, the real
         # positional goal is saved here so it can be restored afterwards.
         self._pending_agent_goal: "tuple[int, int] | None" = None

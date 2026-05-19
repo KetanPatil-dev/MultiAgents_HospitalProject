@@ -86,6 +86,11 @@ class Manager:
         # When the same hash appears N+ times in the window, we're in a deadlock.
         self._state_history: deque = deque(maxlen=30)
         self._deadlock_resolved_at: int = -1  # last timestep we triggered recovery
+        # Rolling history of invalid-agent sets. Used to catch oscillation
+        # (alternating conflict groups) much earlier than full joint-state
+        # cycling — typically within 6-10 turns instead of 40-90.
+        self._invalid_agent_history: deque = deque(maxlen=20)
+        self._cbs_recovered_at: int = -1  # last timestep we ran runtime CBS recovery
         # Chokepoint goals: {(goal_r, goal_c): set[agent_ids_that_need_to_pass_through]}
         # Delivering a box here is deferred until those agents reach their goals.
         self.chokepoint_goals: dict[tuple[int, int], set[int]] = {}
@@ -469,16 +474,15 @@ class Manager:
             print("  CBS: no tasks to plan.", file=sys.stderr, flush=True)
             return
 
-        # CBS budget. CBS is fast when it works (sub-second on most
-        # solvable levels). 3 s wall-clock is enough for the cheap caps;
-        # if CBS hasn't solved by then, falling through to HCA*/Joint A*
-        # is cheaper than burning more time inside CBS.
+        # CBS budget. Kept tight so setup never burns the whole client
+        # time-window on a level CBS can't solve; reactive planning will
+        # handle anything CBS misses.
         plans = anytime_cbs_solve(
             state=initial_state,
             agent_goals=agent_goals,
             dist_map=self.dist_map,
-            time_budget_s=3.0,
-            cap_schedule=(50, 200, 800, 3000, 10000),
+            time_budget_s=5.0,
+            cap_schedule=(50, 200, 800, 3000),
         )
 
         if plans is None:
@@ -696,6 +700,14 @@ class Manager:
         """
         runtime_constraints = set(self.agents[agent_id].constraints)
 
+        # Translate the agent's absolute-time constraints into A*-search-time.
+        # An abs_constraint at global T becomes a local constraint at search
+        # step (T - self.timestep). Drop entries that are already in the past.
+        for (r, c, T) in self.agents[agent_id].abs_constraints:
+            local_t = T - self.timestep
+            if local_t >= 0:
+                runtime_constraints.add((r, c, local_t))
+
         for other_agent_id, waiting_for in self.agents_awaiting_other_agent.items():
             if other_agent_id == agent_id or waiting_for is None:
                 continue
@@ -724,20 +736,87 @@ class Manager:
         ac = joint_state.agent_cols[agent_id]
         return (ar, ac) == task.goal_pos
 
-    def _pop_next_task_for_agent(self, agent_id: int) -> Task | None:
+    def _pop_next_task_for_agent(
+        self, agent_id: int, joint_state: "State | None" = None
+    ) -> Task | None:
         """
         Pull the next task for an agent, preferring the agent's color-group
         box tasks first and the agent's positional task last.
+
+        If `joint_state` is provided, stale tasks are dropped: a box task is
+        stale if its goal cell is already satisfied AND the source box is
+        already at one of its proper goals. This prevents the queue's stale
+        obstacle-clear tasks (pushed by the swap mechanism) from undoing
+        legitimately-completed deliveries after all real boxes are delivered.
         """
         agent_color = State.agent_colors[agent_id]
         color_bucket = self.color_tasks.get(agent_color)
 
+        def is_stale_box_task(t: Task) -> bool:
+            if joint_state is None or t.task_type != "move_box" or t.box_char is None:
+                return False
+            ch = t.box_char
+            # Stale if the goal cell isn't even a goal for this char anymore
+            # (e.g. swap-fabricated bogus goal_pos).
+            gr, gc = t.goal_pos
+            if State.goals[gr][gc] != ch:
+                return True
+            # Stale if there's no undelivered same-char box left in the world.
+            for r in range(len(joint_state.boxes)):
+                for c in range(len(joint_state.boxes[r])):
+                    if joint_state.boxes[r][c] == ch and State.goals[r][c] != ch:
+                        return False  # at least one undelivered box of this char
+            return True  # all same-char boxes are at goals — task is stale
+
+        def is_unreachable_by_agent(t: Task) -> bool:
+            """True if the agent physically can't reach the box's current
+            position (walls separate them). Catches Hungarian/CBS assignments
+            of boxes in isolated rooms to agents that can't get there."""
+            if joint_state is None or t.task_type != "move_box":
+                return False
+            ar = joint_state.agent_rows[agent_id]
+            ac = joint_state.agent_cols[agent_id]
+            br, bc = t.object_pos
+            # BFS through grid cells (walls block, boxes are transparent for
+            # this reachability check — we'd push them anyway).
+            walls = State.walls
+            num_rows = len(walls)
+            num_cols = len(walls[0]) if walls else 0
+            visited = {(ar, ac)}
+            q = deque([(ar, ac)])
+            while q:
+                r, c = q.popleft()
+                if (r, c) == (br, bc):
+                    return False
+                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    nr, nc = r + dr, c + dc
+                    if (nr, nc) in visited:
+                        continue
+                    if not (0 <= nr < num_rows and 0 <= nc < num_cols):
+                        continue
+                    if walls[nr][nc]:
+                        continue
+                    visited.add((nr, nc))
+                    q.append((nr, nc))
+            return True  # box not reachable
+
         if color_bucket is not None:
             if color_bucket["future_box_tasks"]:
-                # Find the first non-deferred task (skip chokepoint-deferred ones)
+                # Find the first non-deferred non-stale REACHABLE task.
                 tasks_queue = color_bucket["future_box_tasks"]
+                while tasks_queue and is_stale_box_task(tasks_queue[0]):
+                    dropped = tasks_queue.popleft()
+                    print(
+                        f"  Dropped stale box task: {dropped.box_char} "
+                        f"{dropped.object_pos} → {dropped.goal_pos}.",
+                        file=sys.stderr, flush=True,
+                    )
                 idx_to_pop = None
                 for i, t in enumerate(tasks_queue):
+                    if is_stale_box_task(t):
+                        continue
+                    if is_unreachable_by_agent(t):
+                        continue  # leave in queue for a reachable agent
                     if not self._chokepoint_blockers_pending(t):
                         idx_to_pop = i
                         break
@@ -749,7 +828,8 @@ class Manager:
                         del tasks_queue[idx_to_pop]
                     return task
                 else:
-                    # All box tasks are chokepoint-deferred — skip to agent goals
+                    # All box tasks are chokepoint-deferred OR unreachable —
+                    # skip to agent goals
                     pass
 
             if color_bucket["future_agent_tasks"]:
@@ -850,7 +930,7 @@ class Manager:
                     flush=True,
                 )
 
-        next_task = self._pop_next_task_for_agent(agent_id)
+        next_task = self._pop_next_task_for_agent(agent_id, joint_state)
         if next_task is None:
             self.agents[agent_id]._plan = []
             self.agents[agent_id]._plan_index = 0
@@ -1088,6 +1168,33 @@ class Manager:
                 dist_map=self.dist_map,
             )
 
+            # For move_agent tasks, fall back to a ghost state where other
+            # agents are removed (only walls + boxes present). Other agents
+            # will yield reactively via conflict resolution; meanwhile A*
+            # finds a topological path that's not blocked by transient agent
+            # positions.
+            if plan is None and current_task.task_type == "move_agent":
+                ghost_rows = list(joint_state.agent_rows)
+                ghost_cols = list(joint_state.agent_cols)
+                for a in range(len(ghost_rows)):
+                    if a != agent_id:
+                        ghost_rows[a] = 0  # wall cell — agent vanishes
+                        ghost_cols[a] = 0
+                ghost = State(ghost_rows, ghost_cols, joint_state.boxes)
+                plan = solve(
+                    state=ghost,
+                    agent_id=agent.agent_id,
+                    goal=goal_tuple,
+                    constraints=set(),
+                    dist_map=self.dist_map,
+                )
+                if plan:
+                    print(
+                        f"  Agent {agent_id}: nav plan via ghost-state (other "
+                        f"agents removed), length {len(plan)}.",
+                        file=sys.stderr, flush=True,
+                    )
+
             if plan:
                 agent._plan = plan
                 agent._plan_index = 0
@@ -1124,6 +1231,40 @@ class Manager:
                 file=sys.stderr,
                 flush=True,
             )
+
+            # Give-up counter: if the SAME task fails N times in a row, push
+            # it back to the queue and clear agent.task so the next pop tries
+            # a different task (final-sweep will re-enqueue if needed). Stops
+            # infinite preplan-failure loops.
+            sig = (
+                current_task.task_type, current_task.box_char,
+                current_task.object_pos, current_task.goal_pos,
+            )
+            last_sig = getattr(agent, "_last_failed_sig", None)
+            cnt = getattr(agent, "_failed_preplan_cnt", 0)
+            if sig == last_sig:
+                cnt += 1
+            else:
+                cnt = 1
+            agent._last_failed_sig = sig
+            agent._failed_preplan_cnt = cnt
+            if cnt >= 25 and current_task.task_type == "move_box":
+                box_color = (
+                    State.box_colors[ord(current_task.box_char) - ord("A")]
+                    if current_task.box_char else None
+                )
+                if box_color in self.color_tasks:
+                    self.color_tasks[box_color]["future_box_tasks"].append(current_task)
+                print(
+                    f"  Agent {agent_id}: task failed {cnt}× in a row; "
+                    f"requeuing and dropping.",
+                    file=sys.stderr, flush=True,
+                )
+                agent.task = None
+                agent._plan = []
+                agent._plan_index = 0
+                agent._failed_preplan_cnt = 0
+                agent._last_failed_sig = None
             return False
 
         return False
@@ -1736,6 +1877,14 @@ class Manager:
                     f"box {box_char_check} ({recent}x); refusing further swaps.",
                     file=sys.stderr, flush=True,
                 )
+                # Plan-A: fresh-task recovery. The current task may have been
+                # corrupted by previous swap rounds (wrong object_pos/goal_pos).
+                # Scan the live state for any undelivered same-color box and
+                # build a clean task from scratch.
+                if state is not None and self._fresh_same_color_box_task(
+                    agent_id, state
+                ):
+                    return False
                 # Plan-B: escape cell.
                 if state is not None:
                     rot = self.agents_escape_rotation.get(agent_id, 0)
@@ -1985,19 +2134,206 @@ class Manager:
             self.timestep += 1
             return joint_action
 
+        # Reachability validation: if an agent's current box task points to a
+        # box it physically cannot reach (walls separate them, e.g. Hungarian
+        # assigned a box in another room), push the task back to the queue so
+        # a reachable agent can claim it.
+        for agent in self.agents:
+            t = agent.task
+            if t is None or t.task_type != "move_box" or t.box_char is None:
+                continue
+            ar, ac = joint_state.agent_rows[agent.agent_id], joint_state.agent_cols[agent.agent_id]
+            br, bc = t.object_pos
+            if (ar, ac) == (br, bc):
+                continue
+            # BFS reachability
+            walls = State.walls
+            rows = len(walls)
+            cols = len(walls[0]) if walls else 0
+            visited = {(ar, ac)}
+            q: deque[tuple[int, int]] = deque([(ar, ac)])
+            reachable = False
+            while q:
+                r, c = q.popleft()
+                if (r, c) == (br, bc):
+                    reachable = True
+                    break
+                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    nr, nc = r + dr, c + dc
+                    if (nr, nc) in visited or not (0 <= nr < rows and 0 <= nc < cols):
+                        continue
+                    if walls[nr][nc]:
+                        continue
+                    visited.add((nr, nc))
+                    q.append((nr, nc))
+            if not reachable:
+                box_color = State.box_colors[ord(t.box_char) - ord("A")]
+                if box_color in self.color_tasks:
+                    self.color_tasks[box_color]["future_box_tasks"].append(t)
+                print(
+                    f"  Agent {agent.agent_id}: box {t.box_char} at "
+                    f"{t.object_pos} unreachable; returning task to queue.",
+                    file=sys.stderr, flush=True,
+                )
+                agent.task = None
+                agent._plan = []
+                agent._plan_index = 0
+
+        # End-game restoration: once all box tasks are exhausted across all
+        # agents and queues, any agent not at its level-defined agent goal
+        # should navigate back to it. Catches agents that were evicted by
+        # done-agent step-aside and never made it back to their real goal.
+        no_future_box = all(
+            not b["future_box_tasks"] for b in self.color_tasks.values()
+        )
+        no_current_box = all(
+            a.task is None or a.task.task_type != "move_box" for a in self.agents
+        )
+        all_box_tasks_done = no_future_box and no_current_box
+
+        # Final-sweep recovery: queues exhausted but the level is NOT in goal
+        # state — some box(es) still off-goal because their task was popped
+        # then never properly completed (e.g. stale-task pruning was too
+        # eager, or a fresh-task assigned the wrong box). Scan the live state
+        # and rebuild a task for any undelivered box, queue it back for a
+        # reachable color-compatible agent.
+        if all_box_tasks_done and not joint_state.is_goal_state():
+            for gr in range(len(State.goals)):
+                for gc in range(len(State.goals[gr])):
+                    goal_ch = State.goals[gr][gc]
+                    if not goal_ch or not goal_ch.isupper():
+                        continue
+                    if joint_state.boxes[gr][gc] == goal_ch:
+                        continue  # goal already satisfied
+                    # Find a box of this char not at any goal of its char.
+                    box_pos = None
+                    for r in range(len(joint_state.boxes)):
+                        for c in range(len(joint_state.boxes[r])):
+                            if joint_state.boxes[r][c] == goal_ch and State.goals[r][c] != goal_ch:
+                                box_pos = (r, c)
+                                break
+                        if box_pos is not None:
+                            break
+                    if box_pos is None:
+                        continue
+                    box_color = State.box_colors[ord(goal_ch) - ord("A")]
+                    if box_color not in self.color_tasks:
+                        continue
+                    # Don't duplicate — only enqueue if no equivalent already pending
+                    bucket = self.color_tasks[box_color]
+                    already = any(
+                        t.box_char == goal_ch and t.object_pos == box_pos
+                        and t.goal_pos == (gr, gc)
+                        for t in bucket["future_box_tasks"]
+                    ) or any(
+                        a.task is not None and a.task.box_char == goal_ch
+                        and a.task.goal_pos == (gr, gc)
+                        for a in self.agents
+                    )
+                    if already:
+                        continue
+                    new_task = Task(
+                        task_type="move_box",
+                        object_pos=box_pos,
+                        goal_pos=(gr, gc),
+                        box_char=goal_ch,
+                        crucial=True,
+                    )
+                    bucket["future_box_tasks"].append(new_task)
+                    print(
+                        f"  Final-sweep: rebuilt task {goal_ch} {box_pos} → "
+                        f"({gr},{gc}).",
+                        file=sys.stderr, flush=True,
+                    )
+                    # Force the flag to false so end-game doesn't fire
+                    all_box_tasks_done = False
+                    no_current_box = False  # not strictly needed but keeps state consistent
+        level_agent_goals = {
+            aid: (gr, gc)
+            for gr, gc, aid in (self.profile.agent_goals if self.profile else [])
+        }
+        if all_box_tasks_done and self.timestep % 5 == 0:
+            print(
+                f"  ENDGAME at t={self.timestep}: all box tasks done; "
+                f"level_agent_goals={level_agent_goals}",
+                file=sys.stderr, flush=True,
+            )
         # BDI-style task completion handling: move solved tasks aside, then
         # assign and replan if another task is available.
         t = self.timestep
         for agent in self.agents:
+            # Restore _pending_agent_goal: when a done agent was stepped aside
+            # by conflict-resolution eviction, its real goal was saved here.
+            if (
+                agent.task is None
+                and agent.agent_goal is not None
+                and (agent.agent_row, agent.agent_col) == agent.agent_goal
+                and agent._pending_agent_goal is not None
+            ):
+                agent.agent_goal = agent._pending_agent_goal
+                agent._pending_agent_goal = None
+                gr, gc = agent.agent_goal
+                if (agent.agent_row, agent.agent_col) != (gr, gc):
+                    back_plan = solve(
+                        state=joint_state,
+                        agent_id=agent.agent_id,
+                        goal=(None, None, gr, gc),
+                        constraints=set(),
+                        dist_map=self.dist_map,
+                    )
+                    if back_plan:
+                        agent._plan = list(back_plan)
+                        agent._plan_index = 0
+                        print(
+                            f"  Agent {agent.agent_id}: returning to real goal "
+                            f"({gr},{gc}), plan len {len(back_plan)}.",
+                            file=sys.stderr, flush=True,
+                        )
+
+            # End-game cleanup: agent not at its level-defined goal, no
+            # remaining plan actions, all deliveries done -> plan a path back.
+            no_remaining_plan = agent._plan_index >= len(agent._plan)
+            if (
+                all_box_tasks_done
+                and agent.agent_id in level_agent_goals
+                and no_remaining_plan
+            ):
+                gr, gc = level_agent_goals[agent.agent_id]
+                if (agent.agent_row, agent.agent_col) != (gr, gc):
+                    back_plan = solve(
+                        state=joint_state,
+                        agent_id=agent.agent_id,
+                        goal=(None, None, gr, gc),
+                        constraints=set(),
+                        dist_map=self.dist_map,
+                    )
+                    if back_plan:
+                        agent.agent_goal = (gr, gc)
+                        agent._pending_agent_goal = None
+                        agent._plan = list(back_plan)
+                        agent._plan_index = 0
+                        agent.abs_constraints = set()
+                        agent._noop_until = -1
+                        print(
+                            f"  Agent {agent.agent_id}: end-game return to "
+                            f"({gr},{gc}), plan len {len(back_plan)}.",
+                            file=sys.stderr, flush=True,
+                        )
 
             if agent.task is None:
-                agent.task = self._pop_next_task_for_agent(agent.agent_id)
+                agent.task = self._pop_next_task_for_agent(agent.agent_id, joint_state)
                 if agent.task is not None:
                     self._sync_agent_task_state(agent.agent_id, agent.task)
 
             self._maybe_advance_completed_task_or_preplan(joint_state, agent.agent_id)
         joint_action = []
         for agent in self.agents:
+            # Forced-NoOp window from conflict resolution: hold the agent in
+            # place until _noop_until is reached, so the conflict winner has
+            # time to clear the corridor.
+            if getattr(agent, "_noop_until", -1) > self.timestep:
+                joint_action.append(Action.NoOp)
+                continue
             action = agent.next_action()
             joint_action.append(action)
 
@@ -2032,15 +2368,137 @@ class Manager:
         )
 
         if not is_valid:
-            # CBS-style conflict resolution: for each invalid agent, inject a
-            # space-time constraint on the cell they tried to enter so the next
-            # replan finds a different route. This breaks the infinite loop of
-            # "find same plan → fail validation → clear → find same plan".
+            # CBS-style conflict resolution: asymmetric yield. The agent with
+            # the SHORTEST remaining plan wins — it finishes first and clears
+            # the contested corridor. Tiebreak: lowest agent_id. All other
+            # conflicting agents NoOp + take a search-time-1 constraint.
+            # Requirement: the winner's action must be individually applicable;
+            # otherwise the server rejects and the client state drifts.
+            invalid_set = set(invalid_agents)
+            def remaining(aid: int) -> int:
+                ag = self.agents[aid]
+                return max(0, len(ag._plan) - ag._plan_index)
+
+            # PRE-STEP: any "done" agent (no plan, no task) in the conflict is
+            # almost certainly just sitting in the corridor blocking work. Its
+            # NoOp is always applicable, so the standard winner-selection picks
+            # it as winner — and the actually-working agent yields forever.
+            # Compute and STUFF a real plan into the done agent's _plan so it
+            # actually moves aside (BDI won't preplan for a taskless agent).
+            level_agent_goal_set = {
+                aid: (gr, gc)
+                for gr, gc, aid in (self.profile.agent_goals if self.profile else [])
+            }
+            for aid in list(invalid_set):
+                ag = self.agents[aid]
+                if remaining(aid) != 0 or ag.task is not None:
+                    continue
+                # Avoid stepping onto other agents' level goals + the cells
+                # adjacent to them (those are likely on the other agent's
+                # final approach path).
+                avoid: set[tuple[int, int]] = set()
+                for other_aid, (gr, gc) in level_agent_goal_set.items():
+                    if other_aid == aid:
+                        continue
+                    avoid.add((gr, gc))
+                    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                        avoid.add((gr + dr, gc + dc))
+                # _step_aside_cell is pending-goal-aware (it never parks the
+                # agent on a cell that's a pending box-goal target).
+                # _find_escape_cell is NOT — using it first risks parking the
+                # agent on the cell where the next box needs to go, deadlocking
+                # the rest of the level. So try step-aside first, only fall
+                # back to far-escape if no safe parking exists nearby.
+                escape = self._step_aside_cell(
+                    joint_state, aid, min_dist=3, avoid_cells=avoid
+                )
+                if escape is None or escape == (ag.agent_row, ag.agent_col):
+                    escape = self._step_aside_cell(
+                        joint_state, aid, avoid_cells=avoid
+                    )
+                if escape is None or escape == (ag.agent_row, ag.agent_col):
+                    escape = self._step_aside_cell(joint_state, aid)
+                if escape is None or escape == (ag.agent_row, ag.agent_col):
+                    continue
+                # Plan A* from current pos → escape cell, install directly.
+                escape_plan = solve(
+                    state=joint_state,
+                    agent_id=aid,
+                    goal=(None, None, escape[0], escape[1]),
+                    constraints=set(),
+                    dist_map=self.dist_map,
+                )
+                if not escape_plan:
+                    continue
+                if ag.agent_goal is not None and ag.agent_goal != escape:
+                    ag._pending_agent_goal = ag.agent_goal
+                ag.agent_goal = escape
+                ag.constraints = set()
+                ag.abs_constraints = set()
+                ag._plan = list(escape_plan)
+                ag._plan_index = 0
+                ag._noop_until = -1
+                # Overwrite this turn's action with the first step of the
+                # escape plan so the eviction takes effect immediately.
+                if escape_plan and joint_state.is_applicable(aid, escape_plan[0]):
+                    joint_action[aid] = escape_plan[0]
+                    ag._plan_index = 1
+                print(
+                    f"    Done-agent {aid} blocking at ({ag.agent_row},"
+                    f"{ag.agent_col}): A*-escape to {escape} "
+                    f"(plan len {len(escape_plan)}).",
+                    file=sys.stderr, flush=True,
+                )
+
+            # Re-validate after PRE-STEP eviction. If the evictions resolved
+            # the conflict, skip the rest of conflict resolution — otherwise
+            # it would clear the eviction plans we just installed.
+            is_valid_now, invalid_now = self.is_joint_action_valid(
+                joint_state, joint_action
+            )
+            if is_valid_now:
+                print(
+                    f"    PRE-STEP eviction resolved conflict.",
+                    file=sys.stderr, flush=True,
+                )
+                invalid_set = set()
+                invalid_agents = []
+            else:
+                invalid_set = set(invalid_now)
+                invalid_agents = invalid_now
+
+            # An agent that's "done" is the WORST winner — push done agents to
+            # the back of the priority queue.
+            def priority(aid: int) -> tuple[int, int, int]:
+                ag = self.agents[aid]
+                rem = remaining(aid)
+                is_done = 1 if (rem == 0 and ag.task is None) else 0
+                return (is_done, rem, aid)
+            ordered = sorted(invalid_set, key=priority)
+            winner = None
+            for aid in ordered:
+                if joint_state.is_applicable(aid, joint_action[aid]):
+                    winner = aid
+                    break
+            yielding = invalid_set - ({winner} if winner is not None else set())
+
+            # If the winner has a meaningfully shorter plan than the loser(s),
+            # the loser will NoOp for several turns instead of immediately
+            # replanning. This gives the winner room to actually clear the
+            # corridor rather than oscillating one step at a time. The hold
+            # count is half the gap, capped at 10 turns.
+            if winner is not None and yielding:
+                win_rem = remaining(winner)
+                for aid in yielding:
+                    gap = remaining(aid) - win_rem
+                    if gap > 4:
+                        hold = min(10, gap // 2)
+                        self.agents[aid]._noop_until = self.timestep + hold
             joint_action = [
-                action if agent.agent_id not in invalid_agents else Action.NoOp
+                action if agent.agent_id not in yielding else Action.NoOp
                 for agent, action in zip(self.agents, joint_action, strict=True)
             ]
-            for aid in invalid_agents:
+            for aid in yielding:
                 agent = self.agents[aid]
                 # Compute the cell the agent was trying to enter
                 bad_action = joint_action[aid] if aid not in invalid_agents else None
@@ -2051,28 +2509,54 @@ class Manager:
                     attempted = agent._plan[agent._plan_index - 1]
                     ar = joint_state.agent_rows[aid]
                     ac = joint_state.agent_cols[aid]
+                    # ABSOLUTE-TIME constraint at global timestep T+2.
+                    # Why +2: on the next planning turn (global T+1), the agent
+                    # is at its current position. A* search-time 0 is "now",
+                    # search-time 1 is "after first action". An abs constraint
+                    # at T+2 translates to local-time 1 on turn T+1, which
+                    # correctly blocks the agent's first move into the bad
+                    # cell. (T+1 would translate to local-time 0 — the start
+                    # state, which the agent isn't at, so it'd be a no-op.)
+                    abs_t = self.timestep + 2
                     if attempted.type is ActionType.Move:
                         bad_r = ar + attempted.agent_row_delta
                         bad_c = ac + attempted.agent_col_delta
-                        agent.constraints.add((bad_r, bad_c, 0))
+                        agent.abs_constraints.add((bad_r, bad_c, abs_t))
                     elif attempted.type is ActionType.Push:
                         # Box destination
                         br = ar + attempted.agent_row_delta
                         bc = ac + attempted.agent_col_delta
                         bdr = br + attempted.box_row_delta
                         bdc = bc + attempted.box_col_delta
-                        agent.constraints.add((bdr, bdc, 0))
-                        agent.constraints.add((br, bc, 0))
+                        agent.abs_constraints.add((bdr, bdc, abs_t))
+                        agent.abs_constraints.add((br, bc, abs_t))
                     elif attempted.type is ActionType.Pull:
                         nr = ar + attempted.agent_row_delta
                         nc = ac + attempted.agent_col_delta
-                        agent.constraints.add((nr, nc, 0))
+                        agent.abs_constraints.add((nr, nc, abs_t))
                 # Clear plan to force replan with new constraint
                 agent._plan = []
                 agent._plan_index = 0
-                # Cap constraint set size to avoid unbounded growth
+                # Cap constraint sets to avoid unbounded growth.
                 if len(agent.constraints) > 200:
                     agent.constraints = set(list(agent.constraints)[-100:])
+                # Drop abs_constraints that are in the past (already expired)
+                # and cap at 200.
+                agent.abs_constraints = {
+                    c for c in agent.abs_constraints if c[2] >= self.timestep
+                }
+                if len(agent.abs_constraints) > 200:
+                    agent.abs_constraints = set(list(agent.abs_constraints)[-100:])
+
+        # Track invalid-agent set per turn for oscillation detection.
+        self._invalid_agent_history.append(
+            frozenset(invalid_agents) if not is_valid else frozenset()
+        )
+
+        # Oscillation recovery via runtime CBS. Runs BEFORE joint-state cycle
+        # detection because alternating-conflict-set oscillation is detectable
+        # much sooner (6-8 turns) than full state cycling (40+ turns).
+        self._maybe_cbs_recovery(joint_state)
 
         # Deadlock detection — if we see the same joint state cycling N+ times,
         # trigger recovery: assign escape cells, clear plans, drop awaiting flags.
@@ -2098,15 +2582,17 @@ class Manager:
         )
         self._state_history.append(sig)
 
-        # Cooldown — don't re-trigger every turn
-        if self.timestep - self._deadlock_resolved_at < 15:
+        # Cooldown — don't re-trigger every turn. Use a longer cooldown to
+        # give the newer oscillation-CBS / done-agent recovery time to work
+        # before the older escape-cell mechanism kicks in (the two can fight).
+        if self.timestep - self._deadlock_resolved_at < 30:
             return
 
-        # Count occurrences of current sig in the rolling window
-        if len(self._state_history) < 12:
+        # Count occurrences of current sig in the rolling window.
+        if len(self._state_history) < 10:
             return
         occurrences = sum(1 for s in self._state_history if s == sig)
-        if occurrences < 4:
+        if occurrences < 5:
             return  # not enough repetition to be a cycle
 
         # We're cycling. Recovery: pick worst-stuck agents (no plan, not at goal),
@@ -2140,6 +2626,264 @@ class Manager:
             agent._plan_index = 0
             self.agents_awaiting_other_agent[agent.agent_id] = None
             agent.awaiting_cnt = 0
+
+    def _maybe_cbs_recovery(self, joint_state: State) -> None:
+        """Detect oscillating conflicts and run runtime CBS over all agents
+        with open tasks. Triggered when invalid-action sets persist for several
+        recent turns, regardless of whether they're identical (per-turn replan
+        keeps shifting which agents conflict). Much earlier signal than full
+        joint-state cycling."""
+        # Cooldown — CBS is expensive; don't re-run constantly.
+        if self.timestep - self._cbs_recovered_at < 25:
+            return
+        if len(self._invalid_agent_history) < 6:
+            return
+
+        recent = list(self._invalid_agent_history)[-10:]
+        nonempty = [s for s in recent if s]
+        # Need persistent invalidity. Lowered to 3 to catch 2-agent alternating
+        # patterns where every other turn is valid (4 invalid in 8 vs. our old
+        # ≥5 threshold meant we never triggered).
+        if len(nonempty) < 3:
+            return
+
+        # Require a repeated set — a single agent_id appearing once is noise,
+        # but the same set appearing 3+ times in the window is a real cycle.
+        from collections import Counter
+        set_counts = Counter(nonempty)
+        most_common_set, most_common_count = set_counts.most_common(1)[0]
+        if most_common_count < 3:
+            return
+
+        # Union of all agents seen as invalid recently — they're all suspect.
+        suspects: set[int] = set()
+        for s in nonempty:
+            suspects |= s
+        if len(suspects) < 2:
+            return
+
+        print(
+            f"  Oscillation detected at t={self.timestep} "
+            f"(invalid sets {[sorted(s) for s in nonempty]}); "
+            f"running runtime CBS recovery on suspects {sorted(suspects)}.",
+            file=sys.stderr, flush=True,
+        )
+        self._cbs_recovered_at = self.timestep
+
+        from searchclient.planner.cbs import anytime_cbs_solve
+
+        # Build agent_goals from CURRENT positions and CURRENT tasks. Only for
+        # SUSPECTS — including all 10 agents made CBS branching explode. Other
+        # agents continue with their existing plans; instantaneous collisions
+        # are caught next turn by is_joint_action_valid and conflict resolution.
+        agent_goals: dict[int, tuple] = {}
+        for aid in suspects:
+            agent = self.agents[aid]
+            task = agent.task
+            if task is None:
+                if agent.agent_goal is not None:
+                    gr, gc = agent.agent_goal
+                    agent_goals[aid] = (None, None, gr, gc)
+                continue
+
+            if task.task_type == "move_box":
+                box_pos = self._find_box_current_pos(
+                    joint_state, task.box_char, task.goal_pos[0], task.goal_pos[1]
+                )
+                if box_pos is None:
+                    continue
+                br, bc = box_pos
+                agent_goals[aid] = (
+                    br, bc, task.goal_pos[0], task.goal_pos[1], task.box_char,
+                )
+            else:  # move_agent
+                agent_goals[aid] = (
+                    None, None, task.goal_pos[0], task.goal_pos[1],
+                )
+
+        if len(agent_goals) < 2:
+            print("  CBS recovery: <2 plannable agents, skipping.",
+                  file=sys.stderr, flush=True)
+            return
+
+        # For ≤2 agents, CBS over long plans is too slow (each CBS node is one
+        # A* call on a possibly 60+ step plan). Go straight to spatial
+        # avoidance — ban the winner's cell zone in the loser's constraints
+        # so A* finds an alternate route.
+        if len(agent_goals) <= 2:
+            print(
+                "  ≤2 suspects: skipping CBS, route diversion directly.",
+                file=sys.stderr, flush=True,
+            )
+            self._sequential_routing_recovery(suspects, joint_state)
+            return
+
+        # 3+ agents: CBS is genuinely valuable (multi-way coordination).
+        # Scale caps with agent count.
+        if len(agent_goals) <= 4:
+            caps = (100, 500, 2000)
+            budget = 5.0
+        else:
+            caps = (50, 200, 800)
+            budget = 3.0
+        plans = anytime_cbs_solve(
+            state=joint_state,
+            agent_goals=agent_goals,
+            dist_map=self.dist_map,
+            time_budget_s=budget,
+            cap_schedule=caps,
+        )
+
+        if plans is None:
+            print(
+                "  CBS recovery failed — falling back to sequential routing.",
+                file=sys.stderr, flush=True,
+            )
+            self._sequential_routing_recovery(suspects, joint_state)
+            return
+
+        # Install plans. Clear runtime constraints and noop_until so the agents
+        # actually execute the CBS plan instead of being held.
+        for aid, plan in plans.items():
+            agent = self.agents[aid]
+            agent._plan = list(plan)
+            agent._plan_index = 0
+            agent._noop_until = -1
+            agent.abs_constraints = set()
+            self.agents_awaiting_other_agent[aid] = None
+            agent.awaiting_cnt = 0
+            print(
+                f"    CBS recovery: Agent {aid} new plan length {len(plan)}.",
+                file=sys.stderr, flush=True,
+            )
+
+        # Wipe invalid history so we don't re-trigger immediately on stale data.
+        self._invalid_agent_history.clear()
+
+    def _fresh_same_color_box_task(self, agent_id: int, joint_state: State) -> bool:
+        """Rebuild a clean box task from current world state. Called when the
+        same-color cycle refuses further swaps because earlier swap rounds
+        corrupted the task's (object_pos, goal_pos) fields. We scan the live
+        boxes grid for an undelivered same-color box and pair it with a free
+        same-char goal. Returns True if a fresh task was assigned."""
+        agent_color = State.agent_colors[agent_id]
+        if agent_color is None:
+            return False
+
+        # Find every box of this color that is NOT already at a goal of its
+        # own char. Pair with whichever same-char goal is still vacant.
+        ar = self.agents[agent_id].agent_row
+        ac = self.agents[agent_id].agent_col
+        candidates: list[tuple[int, int, int, str, tuple[int, int]]] = []
+        for r in range(len(joint_state.boxes)):
+            for c in range(len(joint_state.boxes[r])):
+                ch = joint_state.boxes[r][c]
+                if not ch:
+                    continue
+                if State.box_colors[ord(ch) - ord("A")] != agent_color:
+                    continue
+                if State.goals[r][c] == ch:
+                    continue  # already at one of its goals
+                # Find a goal for this char that doesn't yet hold a same-char box.
+                free_goal: tuple[int, int] | None = None
+                for gr in range(len(State.goals)):
+                    for gc in range(len(State.goals[gr])):
+                        if State.goals[gr][gc] != ch:
+                            continue
+                        if joint_state.boxes[gr][gc] == ch:
+                            continue  # this goal already satisfied
+                        free_goal = (gr, gc)
+                        break
+                    if free_goal is not None:
+                        break
+                if free_goal is None:
+                    continue
+                dist = abs(r - ar) + abs(c - ac)
+                candidates.append((dist, r, c, ch, free_goal))
+
+        if not candidates:
+            print(
+                f"    Fresh-task recovery: no undelivered same-color box left "
+                f"for Agent {agent_id}.",
+                file=sys.stderr, flush=True,
+            )
+            return False
+
+        candidates.sort()
+        _, br, bc, box_char, (gr, gc) = candidates[0]
+        new_task = Task(
+            task_type="move_box",
+            object_pos=(br, bc),
+            goal_pos=(gr, gc),
+            box_char=box_char,
+            crucial=True,
+        )
+        agent = self.agents[agent_id]
+        agent.task = new_task
+        self._sync_agent_task_state(agent_id, new_task)
+        # Clear stale plan + constraints so A* starts from scratch.
+        agent.constraints = set()
+        agent.abs_constraints = set()
+        agent._plan = []
+        agent._plan_index = 0
+        agent._noop_until = -1
+        self.agents_awaiting_other_agent[agent_id] = None
+        agent.awaiting_cnt = 0
+        print(
+            f"    Fresh-task recovery: Agent {agent_id} reassigned box "
+            f"{box_char} ({br},{bc}) → ({gr},{gc}).",
+            file=sys.stderr, flush=True,
+        )
+        return True
+
+    def _sequential_routing_recovery(self, suspects: set[int], joint_state: State) -> None:
+        """Route-diversion fallback when CBS can't reconcile oscillating agents:
+        pick the agent with the shortest remaining plan as 'winner' (least
+        invested in detouring), then ban the winner's 3x3 cell zone in every
+        loser's abs_constraints for many future timesteps. Clearing the
+        losers' plans forces A* to find an alternate route (e.g. the southern
+        corridor instead of fighting through the winner's lane)."""
+        plannable = [
+            (len(self.agents[aid]._plan) - self.agents[aid]._plan_index, aid)
+            for aid in suspects
+            if len(self.agents[aid]._plan) > 0
+        ]
+        if not plannable:
+            return
+        plannable.sort()
+        winner_rem, winner_id = plannable[0]
+        winner = self.agents[winner_id]
+        wr, wc = winner.agent_row, winner.agent_col
+        # Ban window — long enough for the winner to actually clear the area.
+        ban_dt = max(40, min(120, winner_rem + 15))
+
+        diverted: list[int] = []
+        for aid in suspects:
+            if aid == winner_id:
+                continue
+            loser = self.agents[aid]
+            # Ban the 3x3 zone around the winner for the ban window. A* will
+            # find a path that avoids this zone over the next ban_dt turns,
+            # which on TwoPlayer-style layouts means routing through the
+            # parallel corridor.
+            for dr in range(-1, 2):
+                for dc in range(-1, 2):
+                    br, bc = wr + dr, wc + dc
+                    for dt in range(1, ban_dt + 1):
+                        loser.abs_constraints.add((br, bc, self.timestep + dt))
+            # Clear plan so loser re-plans with the new bans applied.
+            loser._plan = []
+            loser._plan_index = 0
+            loser._noop_until = -1  # actively move, don't sit still
+            self.agents_awaiting_other_agent[aid] = None
+            loser.awaiting_cnt = 0
+            diverted.append(aid)
+        print(
+            f"    Route diversion: winner=Agent {winner_id} (rem={winner_rem}, "
+            f"at ({wr},{wc})); diverted {sorted(diverted)} with {ban_dt}-turn "
+            f"ban around 3x3 zone.",
+            file=sys.stderr, flush=True,
+        )
 
     def _sync_agent_positions(self, joint_state: State) -> None:
         """Cache the latest row/col position for each agent."""
@@ -2616,6 +3360,59 @@ class Manager:
     # ------------------------------------------------------------------
     # Escape cell (ported from felix/structure — graceful deadlock recovery)
     # ------------------------------------------------------------------
+
+    def _step_aside_cell(
+        self, joint_state: State, agent_id: int, max_dist: int = 12,
+        min_dist: int = 1, avoid_cells: "set[tuple[int, int]] | None" = None,
+    ) -> tuple[int, int] | None:
+        """BFS outward to find a safe parking cell. Safe = not a wall, not a
+        box, not another agent's cell, not a pending box-goal target, and
+        not in `avoid_cells` (e.g. other agents' level-goal squares). BFS
+        traverses through unsafe cells but only RETURNS a safe cell at
+        distance ≥ min_dist."""
+        ar = joint_state.agent_rows[agent_id]
+        ac = joint_state.agent_cols[agent_id]
+        walls = State.walls
+        num_rows = len(walls)
+        num_cols = len(walls[0]) if walls else 0
+        other_positions = {
+            (joint_state.agent_rows[a], joint_state.agent_cols[a])
+            for a in range(len(joint_state.agent_rows)) if a != agent_id
+        }
+        avoid = set(avoid_cells) if avoid_cells else set()
+        visited: set[tuple[int, int]] = {(ar, ac)}
+        queue: deque[tuple[int, int, int]] = deque([(ar, ac, 0)])
+        while queue:
+            r, c, d = queue.popleft()
+            if d >= max_dist:
+                continue
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = r + dr, c + dc
+                if (nr, nc) in visited:
+                    continue
+                if not (0 <= nr < num_rows and 0 <= nc < num_cols):
+                    continue
+                if walls[nr][nc]:
+                    continue
+                if joint_state.boxes[nr][nc]:
+                    continue
+                if (nr, nc) in other_positions:
+                    continue
+                visited.add((nr, nc))
+                # Pending goal cell? Traverse through but don't park here.
+                goal_char = State.goals[nr][nc]
+                is_pending_goal = (
+                    bool(goal_char) and joint_state.boxes[nr][nc] != goal_char
+                )
+                new_d = d + 1
+                if (
+                    not is_pending_goal
+                    and (nr, nc) not in avoid
+                    and new_d >= min_dist
+                ):
+                    return (nr, nc)
+                queue.append((nr, nc, new_d))
+        return None
 
     def _find_escape_cell(
         self, joint_state: State, agent_id: int, rotation: int = 0,

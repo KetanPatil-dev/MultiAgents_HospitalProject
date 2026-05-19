@@ -1,0 +1,40 @@
+#domain
+hospital
+#levelname
+Planarchy
+#colors
+lightblue: I,8
+blue: 0,A
+purple: D,3
+orange: 5,F
+red: 1,B
+brown: J,9
+green: E,4
+pink: 6,G
+cyan: 2,C
+grey: 7,H
+#initial
+++++++++++++
++ I0    D5 +
++++      +++
++ 1J    E6 +
++++  ++  +++
++ 2F ++ A7 +
++++  ++  +++
++ 3G    B8 +
++++      +++
++ 4H    C9 +
+++++++++++++
+#goal
+++++++++++++
++I  8  3  D+
++++      +++
++G  6  1  B+
++++  ++  +++
++E  4++9  J+
++++  ++  +++
++C  2  7  H+
++++      +++
++A  0  5  F+
+++++++++++++
+#end

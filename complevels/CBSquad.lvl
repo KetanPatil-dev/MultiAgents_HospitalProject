@@ -1,0 +1,29 @@
+#domain
+hospital
+#levelname
+CBSquad
+#colors
+red: 0, 7, A, H, O, V
+orange: 1, 8, B, I, P, W
+green: 2, 9, C, J, Q, X
+blue: 3, D, K, R, Y
+cyan: 4, E, L, S, Z
+purple: 5, F, M, T
+pink: 6, G, N, U
+#initial
++++++++++++++++++++++++++++++++++++++++++++++
++THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG+
++                                           +
++   0   1   2   3   4   5   6   7   8   9   +
++                                           +
++                                           +
++++++++++++++++++++++++++++++++++++++++++++++
+#goal
++++++++++++++++++++++++++++++++++++++++++++++
++                                           +
++                                           +
++                                           +
++                                           +
++ABCDEEEFGHHIJKLMNOOOOPQRRSTTUUVWXZY        +
++++++++++++++++++++++++++++++++++++++++++++++
+#end

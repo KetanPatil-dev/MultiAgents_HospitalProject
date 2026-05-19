@@ -1,0 +1,410 @@
+==============================================================================
+MAS HOSPITAL CLIENT — ARCHITECTURE & ALGORITHMS
+DTU 02285 Spring 2026 — Ketan branch (ketan-advanced3)
+==============================================================================
+
+CONTENTS
+--------
+1.  High-level architecture
+2.  Setup pipeline (one-time, after parsing the level)
+3.  Per-turn main loop
+4.  Planning layer — A*, CBS, Joint A*, IW
+5.  Task / queue model
+6.  Recovery stack (the heart of this branch)
+7.  Algorithmic ideas worth highlighting
+8.  Tuneable parameters
+9.  File map
+10. Known limits
+
+
+==============================================================================
+1. HIGH-LEVEL ARCHITECTURE
+==============================================================================
+
+  Client (client.py)
+      │
+      ▼
+  LevelParser ──► State + LevelProfile
+      │
+      ▼
+  Manager.setup()           ◄─── one-shot preprocessing
+      │
+      ▼
+  Loop: Manager.get_joint_action(state) ──► server   (per-turn coordination)
+      │
+      ▼
+  Termination check
+
+The manager owns three orthogonal subsystems:
+  - TASK SYSTEM:        per-color queues of move_box / move_agent tasks
+  - PLANNING SYSTEM:    A*, CBS, Joint A* for individual / group plans
+  - RECOVERY STACK:     7-layer fallback for when conflicts arise mid-run
+
+
+==============================================================================
+2. SETUP PIPELINE (Manager.setup)
+==============================================================================
+
+Step 1a. Build box-goal tasks
+    For every box-goal cell, pair it with the closest unassigned same-char
+    box in #initial. Create a move_box Task; enqueue in the box's color
+    bucket.
+
+Step 1b. Build agent-goal tasks
+    For every agent-goal cell, create a move_agent Task; enqueue.
+
+Step 1c. Corridor-clearing tasks (skipped for very large levels)
+    Scan for deco boxes (no matching goal) sitting in narrow corridors and
+    inject "shove this box out of the way" tasks ahead of the real work.
+
+Step 1d. Chokepoint analysis (skipped for >2000 cells + >8 agents)
+    Compute box-goal cells whose delivery would cut off another agent from
+    its goal. Mark (goal_r, goal_c) → {agent_ids_blocked}. The pop logic
+    defers a task that would close a chokepoint while a blocked agent
+    still needs to pass through.
+
+Step 1e. CBS preplan        — main coordination pass for first tasks
+    Pop one task per agent, build agent_goals dict, run anytime_cbs_solve.
+    Tight budget (5 s, caps 50/200/800/3000) so setup never blows the
+    client's time window on hard levels.
+
+Step 1f. Hungarian + HCA*   — secondary plan refinement
+    Real Kuhn-Munkres O(n³) box→goal matching (not the older greedy
+    matching). HCA* registers each agent's full trajectory as space-time
+    constraints for lower-priority agents. Two-pass: Pass 1 plans in
+    priority order; Pass 2 retries failed agents with projected state and
+    time-indexed box trajectories.
+
+Step 1g. Joint A* fast-path — for tiny levels only
+    ≤2 agents + ≤450 cells + ≤4 boxes        → 5 s budget
+    3 agents + ≤200 cells + ≤2 boxes         → 3 s budget
+    Full joint state-space search; if it returns a plan, the per-turn
+    loop just pops actions off it (no reactive logic needed).
+
+
+==============================================================================
+3. PER-TURN MAIN LOOP (Manager.get_joint_action)
+==============================================================================
+
+  0. _sync_agent_positions               (cache row/col on each Agent)
+
+  1. Joint A* fast-path                  (if a complete joint plan exists,
+                                          pop next action and return)
+
+  2. Reachability validation             (per-agent BFS through walls; if
+                                          current task points to a box the
+                                          agent can't reach, push task back
+                                          to the queue and clear agent.task)
+
+  3. End-game / final-sweep              (if all queues + current box tasks
+                                          empty but the level isn't goal
+                                          state, scan for undelivered boxes
+                                          and rebuild fresh tasks)
+
+  4. BDI cycle, per agent:
+       - if no task → pop next task (skipping stale & unreachable)
+       - if task solved → mark solved, pop next
+       - if no plan → preplan_for_agent
+       - restore _pending_agent_goal if it reached its escape cell
+
+  5. Emit each agent's next action
+       (NoOp instead, if agent._noop_until > timestep)
+
+  6. is_joint_action_valid               (collision / box-conflict detect)
+       Push frozenset(invalid_agents) to self._invalid_agent_history.
+
+  7. If invalid:
+       7a. PRE-STEP: evict any "done" agent (no task, no plan) blocking
+           the corridor — plan A* to a step-aside cell, install plan,
+           overwrite this turn's NoOp with the first escape action.
+       7b. Re-validate.  If now valid → skip 7c-7e (critical: prevents
+           the regular yielder logic from clearing the eviction plans
+           we just installed).
+       7c. Winner = first applicable in priority order
+           (priority = (is_done_flag, remaining_plan_len, agent_id))
+       7d. Losers NoOp + take an abs_constraint at the bad cell at T+2.
+       7e. If winner has a meaningfully shorter remaining plan, losers
+           also get _noop_until = T + min(10, gap/2) — keeps them out
+           of the way long enough for the winner to actually clear.
+
+  8. _maybe_cbs_recovery()              (oscillation detector)
+       If last 10 turns have ≥3 non-empty invalid sets and the SAME set
+       repeats ≥3×:
+         - 2 suspects → route diversion (see §6.2)
+         - 3+ suspects → runtime CBS over the suspect subset
+         - if CBS fails → fall through to route diversion
+
+  9. _detect_and_resolve_deadlock()      (joint-state cycle detector)
+       Fallback that fires after ≥5 occurrences of the same joint state
+       in a 30-deep window. Forces escape-cell recovery on up to 3 stuck
+       agents. Cooldown = 30 turns so it doesn't fight the CBS recovery.
+
+ 10. Periodic constraint pruning every 50 turns.
+
+
+==============================================================================
+4. PLANNING LAYER
+==============================================================================
+
+A* — planner/astar.py
+    Single-agent space-time A*. Goal forms:
+      (box_r, box_c, goal_r, goal_c, char)  → box delivery
+      (None, None, goal_r, goal_c)          → nav-only
+    Constraints = set of (r, c, t) cells forbidden at search-time t.
+    MAX_G=500, MAX_CLOSED=300 000.
+    Heuristic uses DistanceMap (BFS pre-computed from every goal cell).
+
+CBS — planner/cbs.py
+    cbs_solve(state, agent_goals, dist_map, max_nodes)
+    anytime_cbs_solve(state, agent_goals, dist_map, time_budget_s,
+                      cap_schedule)
+    Low-level = A*. High-level = constraint tree, branching on every
+    detected conflict. Vertex / edge / box-destination conflicts handled.
+    Anytime wrapper retries with progressively larger node caps under a
+    wall-clock budget. The first cap that yields a solution returns
+    (cheapest in the monotone schedule).
+
+Hungarian — planner/hungarian.py
+    assign(): real Kuhn-Munkres O(n³). Rectangular cost matrices padded
+    with BIG=10^12. Cost = BFS distance from each agent to each box
+    (color-eligible only). Pair → agent assignment then load-balances.
+    Subgoal ordering = greedy nearest-goal reordering per agent.
+
+Joint A* — manager._joint_astar_plan
+    Full joint state-space search. State = (agent positions, box positions).
+    Heuristic = sum of nearest-goal distance per agent/box. Hard-capped
+    by node count + wall-clock so it never derails setup on levels it
+    can't handle.
+
+
+==============================================================================
+5. TASK / QUEUE MODEL
+==============================================================================
+
+Task (Task.py) — unified task record:
+    task_type    : "move_box" | "move_agent"
+    object_pos   : (r, c) of the box (or agent's nav source)
+    goal_pos     : (r, c) of the destination
+    box_char     : letter if move_box, None otherwise
+    crucial      : True for level goals, False for helper subgoals
+    agent_end_pos: optional (dr, dc) relative end position
+
+ColorTasksTypedDict — per-color buckets:
+    future_box_tasks   : deque[Task]
+    future_agent_tasks : deque[Task]
+    solved_tasks       : deque[Task]
+
+_pop_next_task_for_agent(agent_id, joint_state):
+    Scans future_box_tasks left-to-right, skipping:
+      - stale tasks (goal cell no longer matches char, OR all same-char
+        boxes already delivered)
+      - tasks pointing to boxes this agent can't reach via BFS
+      - chokepoint-blocked tasks
+    If no box task is poppable, falls through to future_agent_tasks.
+    Drops stale tasks from the front of the queue as it scans.
+
+
+==============================================================================
+6. RECOVERY STACK
+==============================================================================
+
+The branch's defining feature. The reactive system has SEVEN layered
+recoveries, each addressing a distinct failure mode:
+
+6.1 Fresh-task recovery
+    Fires when the same-color swap mechanism has rejected ≥3 swaps for
+    the same (agent, box) pair. Earlier swap rounds may have left the
+    current task with corrupted object_pos / goal_pos. Scan the live
+    grid for any undelivered same-color box, pair it with the nearest
+    vacant same-char goal, build a fresh Task, overwrite agent.task.
+
+6.2 Route diversion (≤2-agent oscillation)
+    Fires from oscillation detector when only 2 agents are suspects.
+    Pick the agent with the shortest remaining plan as winner. For
+    every loser: add abs_constraints banning the winner's 3×3 cell zone
+    for the next ban_dt turns (40 ≤ ban_dt ≤ 120). Clear the loser's
+    plan so A* replans through a detour (e.g. parallel corridor on
+    TwoPlayer-style layouts).
+
+6.3 Runtime CBS recovery (3+ agents)
+    Same trigger as 6.2 but 3+ suspects. Build agent_goals from current
+    positions + current tasks (refreshing move_box object_pos from the
+    live grid first), run anytime_cbs_solve with caps scaled to agent
+    count. On success, install plans + clear noop_until + clear
+    abs_constraints. On failure, fall through to route diversion.
+
+6.4 Done-agent eviction
+    PRE-STEP in conflict resolution. Any "done" agent (no task, no
+    remaining plan) in the invalid_agents set gets:
+      - escape cell from _step_aside_cell (BFS, pending-goal-aware,
+        avoid cells = other agents' level goals + adjacent cells)
+      - prefer min_dist=3 escape; fall back to nearer cell if none
+      - A* nav plan computed and STUFFED into agent._plan directly
+        (BDI loop won't preplan for taskless agents)
+      - this turn's action overwritten with first step of escape plan
+    Then re-validate joint action; if now valid, skip the regular
+    yielder logic entirely. The PRE-STEP re-validation is the fix that
+    made MAmaMASS solve — without it, the yielder logic clears the
+    eviction plans every turn and the cycle repeats forever.
+
+6.5 Same-color swap mechanism + Negotiation log
+    When A* fails because of a same-color box obstacle, swap the
+    agent's current task with an obstacle-clear sub-task. Every cross-
+    agent swap recorded in self.negotiations: list[TaskSwap]. Cycle
+    detection refuses if the same (requester, granter, obstacle_box)
+    tuple appears ≥3× in a 30-turn window. Cross-color swap is the
+    distinctive "agents negotiate via implicit task hand-off"
+    algorithmic idea — log is dumped to negotiations.json at run end.
+
+6.6 End-game / final-sweep
+    Once every color bucket is empty AND every agent's current task is
+    None or non-box, two things happen:
+      (a) any agent not at its level-defined agent_goal plans an A* path
+          back to it (catches agents evicted during box delivery that
+          never returned).
+      (b) if the level state isn't goal_state, scan for any undelivered
+          box and rebuild a fresh task for it (catches over-eager stale-
+          task pruning or wrong fresh-task assignments).
+
+6.7 Give-up counter
+    Per-agent counter of consecutive preplan failures with the SAME
+    task signature. After 25 failures the task is requeued and
+    agent.task is cleared, forcing the agent to pop a different task.
+
+
+==============================================================================
+7. ALGORITHMIC IDEAS WORTH HIGHLIGHTING (for the report / video)
+==============================================================================
+
+A. Implicit negotiation via task swaps
+   Cross-color obstacle clearance is framed as a structured request /
+   grant exchange with a typed TaskSwap log, cycle detection, and
+   refusal protocol. This is the most distinctive design choice in
+   the project; the negotiations.json dump powers offline visualisation.
+
+B. Anytime CBS
+   Classic anytime-algorithm vocabulary applied to CBS — directly
+   addresses the 3-minute competition budget. Returns the cheapest cap
+   that solves; falls through to reactive on time-out.
+
+C. CBS-first pipeline
+   HCA*'s priority constraints often make solvable problems look
+   infeasible. We tested CBS-first vs HCA*-first and found CBS-first
+   is ~5× faster on WardRush with no plan-quality loss. HCA* is kept
+   as the fallback when CBS can't reconcile.
+
+D. Multi-layer reactive recovery
+   Seven distinct, layered recoveries (see §6) attack the seven
+   failure modes empirically observed across the level set. Each is a
+   tiny, generic rule; together they handle a surprisingly wide
+   variety of conflict patterns.
+
+E. Reachability-aware task assignment
+   Per-turn BFS check that an agent can actually reach its assigned
+   box through the grid (walls block, boxes transparent). Solves the
+   Eighty-style failure where Hungarian assigned a box in an isolated
+   room to an agent in another room.
+
+F. Phase-aware conflict resolution
+   The conflict resolver classifies agents as done / working /
+   stationary-done and rewrites the yielder selection accordingly.
+   Done agents are forced aside instead of winning by default with
+   their always-applicable NoOp.
+
+
+==============================================================================
+8. TUNEABLE PARAMETERS (current values)
+==============================================================================
+
+Setup
+  CBS preplan time budget         5 s
+  CBS preplan cap schedule        (50, 200, 800, 3000)
+  Joint A* tier-1 budget          5 s  (≤2 ag, ≤450 cells, ≤4 boxes)
+  Joint A* tier-2 budget          3 s  (3 ag, ≤200 cells, ≤2 boxes)
+
+Per-turn detection
+  Stuck-agent nudge threshold     15 consecutive no-plan turns
+  Oscillation: history window     10 last invalid sets
+  Oscillation: min nonempty       3 of last 10
+  Oscillation: min repeats        3 same set
+  Oscillation: CBS cooldown       25 turns
+  Deadlock: state-history depth   30
+  Deadlock: min occurrences       5 of 30
+  Deadlock: cooldown              30 turns
+  Give-up counter threshold       25 same-task preplan failures
+
+A* internals
+  MAX_G                           500
+  MAX_CLOSED                      300 000
+
+Route diversion
+  Ban window                      max(40, min(120, win_rem + 15))
+  Ban zone                        3 × 3 cells around winner
+
+Constraint hygiene
+  Per-agent abs_constraints cap   200 (trim to last 100 on overflow)
+  Periodic prune                  every 50 turns; cap 300 (trim to 150)
+
+
+==============================================================================
+9. FILE MAP
+==============================================================================
+
+  searchclient_python/searchclient/
+    client.py            — entry point, 19 500-step loop
+    level_parser.py      — parses level → State + LevelProfile
+    state.py             — joint state, is_applicable / is_conflicting /
+                           result / is_goal_state
+    action.py            — Action enum (NoOp + 4 Move + 12 Push + 12 Pull)
+    color.py             — Color.compatible() etc.
+    box.py               — Box record
+    Task.py              — unified Task record
+    ColorTasksTypedDict.py
+    memory.py            — RSS reporter
+    heuristics.py        — DistanceMap (BFS from every goal cell)
+    agent.py             — Agent class (state container; _plan, task,
+                           agent_goal, _pending_agent_goal, awaiting_cnt)
+    ManagerHelper.py     — small per-turn helpers (sync, validate, ...)
+    manager.py           — everything in this document
+    planner/
+      astar.py           — single-agent A*
+      cbs.py             — CBS + anytime_cbs_solve
+      hungarian.py       — Kuhn-Munkres + subgoal ordering
+    task_swap.py         — TaskSwap dataclass + negotiation logging
+
+  custom/                — pedagogical & competition-style level variants
+  complevels/            — previous-years competition levels
+
+  ARCHITECTURE.txt       — this file
+  SOLVED_LEVELS.txt      — levels solved this session
+  CREATION.md            — design journal
+  DESIGN.md              — original template
+  MANAGER_FLOW.md        — older flow reference (partially superseded)
+  REPORT.md              — exercise answers
+
+
+==============================================================================
+10. KNOWN LIMITS
+==============================================================================
+
+Cross-task ordering / temp-undelivery
+    On levels like duckie, NineChars, LoopBots the remaining failure
+    mode is the same: a box delivered to its goal becomes immovable
+    in _find_obstacles' ghost state, and a later box needs to traverse
+    that cell to reach its own goal. A* finds no route and the agent
+    loops. The fix would be either:
+      (a) preplan-time task ordering — detect "box X's path crosses
+          box Y's goal" and force X before Y.
+      (b) temp-undeliver mechanism — let the agent push the delivered
+          box aside, route the other through, push it back.
+    Both are planner-level changes; the reactive stack can't fix this.
+
+Very large levels (>2000 cells + >8 agents)
+    Setup skips chokepoint analysis. CBS preplan may also fail; the
+    level then runs on the reactive system alone.
+
+A* heuristic admissibility under abs_constraints
+    abs_constraints encode forbidden (r, c, t) cells. The heuristic
+    (BFS distance from goal) ignores them, which can mislead A* into
+    explorations that get pruned at the constraint check. Bounded by
+    MAX_CLOSED so it terminates, but may not find optimal routes.

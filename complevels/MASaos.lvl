@@ -1,0 +1,112 @@
+#domain
+hospital
+#levelname
+MASaos
+#colors
+lightblue: A,3
+orange: K,2
+cyan: 1,V
+red: R,0
+#initial
+++++++++++++++++++++++++++++++++++++++++++++++++++
++AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+
++AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+
++AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+
++AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+
++AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+
++AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+AAAAAAAAAAAAAAAAA+
++AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+
++AAAAAAAA++AAAAAAAAAAAAAAAAAAAAAAAAAAAA++++AAAAAA+
++AAAAAA++  +AAAAAAAAAAAAAAAAAAAAAAAAAA+   +AAAA+++
++AAAAAA+ ++ +AAAAAAAAAAAAAAAAAAAAAAAAAA+   +AA+ ++
++AAAAAAA+ + ++AAAAAAAAAAAAAAAAAAAAAAAAA+   +A+ + +
++AAAAA++ ++  ++AAAAAAAAAAAAAAAA++AAA++A+    + +  +
++AAA+A+ +  +  ++AAAA+++AAAA+++A+ +AA+ +      +  ++
++AAAA++ ++ +   +AAAA+  +AA+  + +  +A+     +  +++ +
++AAA+ +  +++   ++AAA+   +A+   + + ++     ++      +
++A++ ++  + +    +AAA+   +A+   + +         +      +
++A+ + +  3    ++AAAAA+  +++    + +       +       +
+++ + +  + + + +AAA++A+          +        +       +
++++   ++++++   +A+ ++                   +        +
++AA+++AAAAA+++ +A+                      +        +
++AAAAAAAAAAA+  +A+                     ++        +
++AAAAAAAAA++    ++                   ++          +
++AAAAAAAA+   +  +                   ++           +
++AAAAAAAAA++++  +                  +             +
++AAAA+++++   +                   +++             +
++A+++     +++                                    +
++A+  ++                        +++               +
++AA++AA+++                    +                  +
++AAAAAAAAA+           +++K++++2                  +
++AAAAAAAAA+  +        +      +                   +
++AAAAAAAAA+++      ++++     +                    +
++AAAAAAAAAA+      ++       +                    ++
++AAAAAAAAAA++++  +        +                 ++1+A+
++AAAAAAAAAAA+   +       ++                  +A++A+
++AAAAAAAAAA+           +                   +AAAAA+
++AAAAAA+AAAA+        ++                  ++AAAAAA+
++AAAAAA+++++                            +AAAAAAAA+
++AAAAAA+     +++  +                    +AAAAAAAAA+
++AAAAAAA++++++A++++      VVV         + +AAAAAAAAA+
++AAAAAAAAAAAAAAAAA+      VRV      +++A+AAAAAAAAAA+
++AAAAAAAAAAAAAAAAA++     VVV     +AAAAAAAAAAAAAAA+
++AAAAAAAAAAAAAAAAAA+0+        + +AAAAAAAAAAAAAAAA+
++AAAAAAAAAAAAAAAAAAA++++     +A++AAAAAAAAAAAAAAAA+
++AAAAAAAAAAAAAAAAAAAAAAA++   +A+AAAAAAAAAAAAAAAAA+
++AAAAAAAAAAAAAAAAAAA+AAAAA+++AAAAAAAAAAAAAAAAAAAA+
++AAAAAAAAAAAAAAAAAA+ +AAAAAAAAAAAAAAAAAAAAAAAAAAA+
++AAAAAAAAAAAAAAAAAA+ +AAAAAAAAAAAAAAAAAAAAAAAAAAA+
++AAAAAAAAAAAAAAAAAA++AAAAAAAAAAAAAAAAAAAAAAAAAAAA+
+++++++++++++++++++++++++++++++++++++++++++++++++++
+#goal
+++++++++++++++++++++++++++++++++++++++++++++++++++
++                                                +
++                                                +
++                                                +
++                                                +
++                                                +
++                              +                 +
++                                                +
++        ++                            ++++      +
++      ++  +                          +   +    +++
++      + ++ +                          +   +  + ++
++       + + ++                         +   + + + +
++     ++ ++  ++                ++   ++ +    + +  +
++   + + +  +  ++    +++    +++ + +  + +      +  ++
++    ++ ++ +   +    +  +  +  + +  + +     +  +++ +
++   + +  +++   ++   +   + +   + + ++     ++      +
++ ++ ++  + +    +   +   + +   + +         +      +
++ + + +       ++     +  +++    + +       +       +
+++ + +  + + + +   ++ +          +        +       +
++++   ++++++   + + ++                   +        +
++  +++     +++ + +                      +        +
++           +  + +                     ++        +
++         ++    ++                   ++          +
++        +   +  +                   ++           +
++         ++++  +                  +             +
++    +++++   +                   +++             +
++ +++     +++                                    +
++ +  ++                        +++               +
++  ++  +++                    +                  +
++         +           +++ ++++                   +
++         +  +        +      +                   +
++         +++      ++++     +         V          +
++          +      ++       +         V V        ++
++          ++++  +        +          V  V   ++ + +
++           +   +       ++            VV    + ++ +
++          +           +                   +     +
++      +    +        ++                  ++      +
++      +++++                            +        +
++      +RVK  +++  +                    +         +
++       ++++++ ++++                  + +         +
++                 +               +++ +          +
++                 ++             +               +
++                  + +        + +                +
++                   ++++     + ++                +
++                       ++   + +                 +
++                   +     +++                    +
++                  + +                           +
++                  + +                           +
++                  ++                            +
+++++++++++++++++++++++++++++++++++++++++++++++++++
+#end

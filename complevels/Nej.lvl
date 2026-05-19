@@ -1,0 +1,44 @@
+#domain
+hospital
+#levelname
+Nej
+#colors
+blue: 0, 1, A
+red: 2, 3, 4, B
+green: 5, D
+grey: W
+#initial
+++++++++++++++++
++W2WAA       BB+
++W3WA         B+
++W0WWWWWW WWWWW+
++W WWWWW 5 WWWW+
++W WWWWW D WWWW+
++   WWWWW WWWWW+
++W W     1     +
++W W     4     +
++W W         W +
++W W         W +
++W W         W +
++W W         W +
++W W         W +
++W W         W +
+++++++++++++++++
+#goal
+++++++++++++++++
++              +
++              +
++              +
++              +
++              +
++              +
++              +
++              +
++             B+
++             A+
++             B+
++ 0           A+
++ 3           B+
++ 2           A+
+++++++++++++++++
+#end

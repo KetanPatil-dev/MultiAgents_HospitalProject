@@ -1,0 +1,113 @@
+#domain
+hospital
+#levelname
+slAIve
+#colors
+blue: 0,1,A,B,E,F,G
+red: 2
+cyan: C
+purple: D
+brown: 3,4,5
+#initial
+++++++++++++++++++++++++++++++++++++++++++++++++++
++D D D D D D D D D D D D D                       +
++D D D D D D D D D D D D D         3             +
++D D D D D D D D D D D D D                       +
++D D D D D D D D D D D D D                       +
++D D D D D D D D D D D D D                       +
++                        D                       +
++                        D                       +
++                        D   4      CCCCCCCCC    +
++                        D                       +
++                        D                       +
++                       2D        C              +
++                        D                       +
++           0 1          D                       +
++                        D                     5 +
++                        D                       +
++                        D                       +
++                        D   CCC                 +
++ A G A A G A A G A A G AD                       +
++ E F G E F G E F G E F GD                       +
++ F A F F A F F A F F A FD                       +
++ G E B G E B G E B G E BD                       +
++DBDBDEDBDBDEDBDBDEDBDBDED              CCCC     +
++CCCCCCCCCCCCCCCCCCCCCCCC+AAAAAAAAAAAA AAAAAAAAAA+
++                        B                       +
++                        B                       +
++                        B                       +
++                        B                       +
++ CCCCCCCCC   CCCCCCCCC  B                       +
++ C                   C  B                       +
++ C                   C  B   CCCCCCCCCCCCCCCCCC  +
++ C                   C  B                       +
++ C                   C  B                       +
++ C                   C  B                       +
++ C                   C  B                       +
++ C                   C  B                       +
++ CCCCCCCCCCCCCCCCCCCCC  B                       +
++                        B                       +
++                        B                       +
++                        B                       +
++                        B                       +
++                                                +
++                                                +
++                        B                       +
++                        B                       +
++                        B                       +
++                        B                       +
++                        B                       +
++                        B                       +
+++++++++++++++++++++++++++++++++++++++++++++++++++
+#goal
+++++++++++++++++++++++++++++++++++++++++++++++++++
++DBDBDBDBDBDBDBDBDBDBDBDBD                       +
++DADADADADADADADADADADADAD                       +
++DFDFDFDFDFDFDFDFDFDFDFDFD                       +
++DEDEDEDEDEDEDEDEDEDEDEDED                       +
++DGDGDGDGDGDGDGDGDGDGDGDGD                       +
++                        D                       +
++                        D                       +
++                        D                       +
++                        D                       +
++                        D                       +
++                        D                       +
++                        D                       +
++                        D                       +
++2                       D                       +
++                        D                       +
++                        D                       +
++                        D                       +
++                        D                       +
++                        D                       +
++                        D                       +
++                        D                       +
++D D D D D D D D D D D D D                       +
++CCCCCCCCCCCCCCCCCCCCCCCC+AAAAAAAAAAAA AAAAAAAAAA+
++                        B                       +
++                        B                       +
++                        B                       +
++                        B                       +
++                        B                       +
++                        B                       +
++                        B   CCCCCCCCCCCCCCCCCC  +
++       345              B                       +
++                        B                       +
++                        B                       +
++                        B                       +
++                        B                       +
++                        B                       +
++                        B                       +
++                        B                       +
++                        B                       +
++                        B                       +
++                                                +
++                                                +
++                        B                       +
++                        B                       +
++                        B                       +
++                        B                       +
++                        B                       +
++                        B                       +
+++++++++++++++++++++++++++++++++++++++++++++++++++
+#end

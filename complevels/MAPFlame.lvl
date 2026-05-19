@@ -1,0 +1,70 @@
+#domain
+hospital
+#levelname
+MAPFlame
+#colors
+orange: X
+red: S
+blue: 0,A
+purple: B,1
+cyan: 2,C
+green: 3,D
+#initial
++++++++++++++++++++++++++++++++++
++                            +  +
++             +++           +X+ +
++   +         +S+++        +SS+ +
++  +S+        +SSS+     ++  ++  +
++ +XS+     ++ +++S+++   +S+     +
++  +XS+    +S+  +SSS+ ++SS+     +
++   ++   0 +SS++SSSS+ +SSX+     +
++         A++SSSSXXS+ +S++      +
++           ++SXXXXX+ +S+ B     +
++        +   +SSXXXX+ +S+1++    +
++       +S+  ++SXXXX+ +S++S+    +
++  +++  +SS+  +SXXS+  +S+XS+    +
++  +S++ +SS+  +SXX+   +S+SS+    +
++  ++S++SSS+++SSXX+   +S+S++    +
++   +SS+SXSSSSSXXXX+++XXSS+     +
++   ++SSSXSSSSSSSSSS+SXXS++     +
++    +SSXXSSSSXXXSSXXXXXS+      +
++   ++SSXXXXXXXXXXXXXXXXS+++    +
++   +SSXXXXXXXXXXXXX+XXXSSX+    +
++   +SSXXX++XXX+XXX+ +XXSS++    +
++   +SSXXX+ +X+ +++  +XXSS+     +
++   ++SSXX+  +  + 2C +XSS++     +
++    ++SSX++3D +   ++XSS++      +
++     ++SSX++     +XXSS++       +
++      ++SSX+    +XXSS++        +
++       +++++++++++++++         +
++++++++++++++++++++++++++++++++++
+#goal
++++++++++++++++++++++++++++++++++
++                            +  +
++             +++           + + +
++   +         + +++        +  + +
++  + +        +   +     ++  ++  +
++ +  +     ++ +++ +++   + +     +
++  +  +    + +  +   + ++  +     +
++   ++     +  ++    + +   +     +
++          ++       + + ++      +
++    B      ++      + + +       +
++        +   +      + + + ++    +
++       + +  ++     + + ++ +    +
++  +++  +  +  +    +  + +  +    +
++  + ++ +  +  +   +   + +  +    +
++  ++ ++   +++    +   + + ++    +
++   +  +           +++    +     +
++   ++              +    ++     +
++    +                   +A     +
++   ++                   +++    +
++   +               +      +    +
++   +     ++   +   +D+    ++    +
++   +     +C+ + +++  +    +     +
++   ++    +  +  +    +   ++     +
++    ++   ++   +   ++   ++      +
++     ++   ++     +    ++       +
++      ++   +    +    ++        +
++       +++++++++++++++         +
++++++++++++++++++++++++++++++++++
+#end
