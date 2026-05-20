@@ -1521,14 +1521,23 @@ class Manager:
     def _find_box_current_pos(
         self, joint_state: State, box_char: str, goal_r: int, goal_c: int
     ) -> tuple[int, int] | None:
-        """Find the current (row, col) of the box with the given char that has
-        NOT yet reached the goal. Returns the one closest to the goal if multiple."""
+        """Find the current (row, col) of an UNDELIVERED box with the given
+        char. A box is "undelivered" only if its cell is not ANY same-char
+        goal (not just the specific target). Without this, multi-instance
+        same-char levels (e.g. duckie's 4 U's) end up dragging a U from one
+        satisfied U goal to another, un-satisfying the first. Returns the
+        off-all-goals box closest to the requested goal."""
         candidates: list[tuple[int, int, int]] = []
         for r, row in enumerate(joint_state.boxes):
             for c, ch in enumerate(row):
-                if ch == box_char and not (r == goal_r and c == goal_c):
-                    d = abs(r - goal_r) + abs(c - goal_c)
-                    candidates.append((d, r, c))
+                if ch != box_char:
+                    continue
+                # Skip if (r, c) is a goal for this same char — that box is
+                # already delivered; do not steal it.
+                if State.goals[r][c] == box_char:
+                    continue
+                d = abs(r - goal_r) + abs(c - goal_c)
+                candidates.append((d, r, c))
         if not candidates:
             return None
         candidates.sort()
