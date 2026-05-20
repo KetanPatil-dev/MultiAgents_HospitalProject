@@ -2422,6 +2422,19 @@ class Manager:
         # and rebuild a task for any undelivered box, queue it back for a
         # reachable color-compatible agent.
         if all_box_tasks_done and not joint_state.is_goal_state():
+            # Multi-instance same-char levels (e.g. duckie, lilchal): each
+            # off-goal box can only fill ONE goal. Without this set, the
+            # nested loop assigns the first off-goal box to every unsatisfied
+            # goal of its char, creating contradictory tasks (same source,
+            # different destinations) that the planner thrashes on forever.
+            assigned_boxes: set[tuple[int, int]] = set()
+            # Also pre-exclude boxes that an agent is already committed to.
+            already_committed: set[tuple[int, int]] = set()
+            for a in self.agents:
+                if (a.task is not None
+                    and a.task.task_type == "move_box"
+                    and a.task.box_char is not None):
+                    already_committed.add(a.task.object_pos)
             for gr in range(len(State.goals)):
                 for gc in range(len(State.goals[gr])):
                     goal_ch = State.goals[gr][gc]
@@ -2429,17 +2442,21 @@ class Manager:
                         continue
                     if joint_state.boxes[gr][gc] == goal_ch:
                         continue  # goal already satisfied
-                    # Find a box of this char not at any goal of its char.
+                    # Find an UNCLAIMED off-goal box of this char.
                     box_pos = None
                     for r in range(len(joint_state.boxes)):
                         for c in range(len(joint_state.boxes[r])):
-                            if joint_state.boxes[r][c] == goal_ch and State.goals[r][c] != goal_ch:
+                            if (joint_state.boxes[r][c] == goal_ch
+                                and State.goals[r][c] != goal_ch
+                                and (r, c) not in assigned_boxes
+                                and (r, c) not in already_committed):
                                 box_pos = (r, c)
                                 break
                         if box_pos is not None:
                             break
                     if box_pos is None:
                         continue
+                    assigned_boxes.add(box_pos)
                     box_color = State.box_colors[ord(goal_ch) - ord("A")]
                     if box_color not in self.color_tasks:
                         continue
