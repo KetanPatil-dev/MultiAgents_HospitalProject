@@ -2347,6 +2347,23 @@ class Manager:
 
             return True
 
+        # Same-color obstacle is already assigned to another agent who will
+        # eventually move it. Set the awaiting flag so this agent waits for
+        # them rather than thrashing on the unplannable task. Without this,
+        # multi-agent same-color levels (e.g. lilchal: agents 1+2 both red)
+        # would log "NOT IMPLEMENTED" forever as agent 2 fights agent 1.
+        if obstacle_assigned_to_agent_id is not None:
+            self.agents_awaiting_other_agent[agent_id] = (
+                obstacle_assigned_to_agent_id
+            )
+            self.agents[agent_id].awaiting_cnt = 0
+            print(
+                f"  Agent {agent_id}: obstacle box {obs_color} at "
+                f"({obs_r},{obs_c}) already being cleared by Agent "
+                f"{obstacle_assigned_to_agent_id}; will wait.",
+                file=sys.stderr, flush=True,
+            )
+            return True
         print("Swapping edgecase NOT IMPLEMENTED YET", file=sys.stderr, flush=True)
         return False
 

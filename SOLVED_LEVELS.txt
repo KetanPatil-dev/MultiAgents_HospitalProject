@@ -5,6 +5,8 @@ AlphaMAS
 BigForty
 DASH
 Dolor
+donut
+duckie
 Eighty
 logo
 LoveLock
