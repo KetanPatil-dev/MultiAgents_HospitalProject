@@ -332,7 +332,15 @@ class Manager:
         num_rows = len(State.walls)
         num_cols = len(State.walls[0]) if num_rows > 0 else 0
 
-        def bfs_reachable(start: tuple[int, int], blocked_cell: tuple[int, int]) -> set[tuple[int, int]]:
+        def bfs_reachable(
+            start: tuple[int, int],
+            blocked_cells: set[tuple[int, int]] | tuple[int, int] = (-1, -1),
+        ) -> set[tuple[int, int]]:
+            # Accept either a single (r, c) or a set of cells to treat as walls.
+            if isinstance(blocked_cells, set):
+                blocked = blocked_cells
+            else:
+                blocked = {blocked_cells}
             visited: set[tuple[int, int]] = {start}
             q: _dq = _dq([start])
             while q:
@@ -345,11 +353,19 @@ class Manager:
                         continue
                     if State.walls[nr][nc]:
                         continue
-                    if (nr, nc) == blocked_cell:
+                    if (nr, nc) in blocked:
                         continue
                     visited.add((nr, nc))
                     q.append((nr, nc))
             return visited
+
+        # All other agents' positional goals — they will end up sitting on
+        # these cells, so during chokepoint analysis they behave as walls
+        # for any agent that has NOT yet reached its own positional goal.
+        all_agent_goals: dict[int, tuple[int, int]] = {
+            aid: (ag_r, ag_c)
+            for ag_r, ag_c, aid in self.profile.agent_goals
+        }
 
         # For each box goal cell, simulate it as a wall and check agent reachability
         for goal_r, goal_c, _ in self.profile.box_goals:
@@ -357,10 +373,22 @@ class Manager:
                 if (ag_r, ag_c) == (goal_r, goal_c):
                     continue
                 start = (initial_state.agent_rows[aid], initial_state.agent_cols[aid])
-                reachable_without = bfs_reachable(start, blocked_cell=(-1, -1))
+                # Treat OTHER agents' positional goals as walls too: by the time
+                # the affected agent attempts its positional task, the other
+                # agents may already be parked at their goals and physically
+                # block the topology. Missing this causes pocket-traps like
+                # TeamAgent where agent 2 stranded by agent 1 sitting at (1,2).
+                other_agent_goal_blockers: set[tuple[int, int]] = {
+                    pos for other_aid, pos in all_agent_goals.items()
+                    if other_aid != aid and pos != (goal_r, goal_c)
+                }
+                reachable_without = bfs_reachable(
+                    start, blocked_cells=other_agent_goal_blockers
+                )
                 if (ag_r, ag_c) not in reachable_without:
                     continue  # agent goal unreachable anyway, skip
-                reachable_with = bfs_reachable(start, blocked_cell=(goal_r, goal_c))
+                blocked_with = other_agent_goal_blockers | {(goal_r, goal_c)}
+                reachable_with = bfs_reachable(start, blocked_cells=blocked_with)
                 if (ag_r, ag_c) not in reachable_with:
                     self.chokepoint_goals.setdefault((goal_r, goal_c), set()).add(aid)
                     print(
@@ -1168,12 +1196,13 @@ class Manager:
                 dist_map=self.dist_map,
             )
 
-            # For move_agent tasks, fall back to a ghost state where other
-            # agents are removed (only walls + boxes present). Other agents
-            # will yield reactively via conflict resolution; meanwhile A*
-            # finds a topological path that's not blocked by transient agent
-            # positions.
-            if plan is None and current_task.task_type == "move_agent":
+            # Ghost-state fallback: if regular A* fails, retry with other
+            # agents removed (placed at the wall cell (0,0) so they vanish).
+            # A* then finds a topological path through the map; runtime
+            # conflict resolution handles collisions when they materialise.
+            # Applies to both nav and box tasks — works when an agent is
+            # blocked by another agent sitting in the only viable corridor.
+            if plan is None:
                 ghost_rows = list(joint_state.agent_rows)
                 ghost_cols = list(joint_state.agent_cols)
                 for a in range(len(ghost_rows)):
@@ -1190,8 +1219,9 @@ class Manager:
                 )
                 if plan:
                     print(
-                        f"  Agent {agent_id}: nav plan via ghost-state (other "
-                        f"agents removed), length {len(plan)}.",
+                        f"  Agent {agent_id}: {current_task.task_type} plan "
+                        f"via ghost-state (other agents removed), length "
+                        f"{len(plan)}.",
                         file=sys.stderr, flush=True,
                     )
 
@@ -1619,6 +1649,123 @@ class Manager:
             file=sys.stderr, flush=True,
         )
 
+    def _detect_blocking_cycle(
+        self, state: "State", start_agent_id: int, max_hops: int = 12,
+    ) -> list[int] | None:
+        """
+        Follow the obstacle chain: agent X's task is move BOX_X to GOAL_X;
+        GOAL_X is occupied by some other box Y; box Y's owner is the next
+        link. Returns the closed cycle of agent_ids when the chain comes
+        back to start_agent_id (every agent in the chain blocked by another
+        blocked agent — task-swapping cannot make progress). Otherwise None.
+
+        Used to detect 4-corner-swap deadlocks (e.g. MAvis) where the chain
+        of obstacle-clear requests rotates around the ring without anyone
+        physically moving a box.
+        """
+        chain: list[int] = []
+        current = start_agent_id
+        num_rows = len(state.boxes)
+        num_cols = len(state.boxes[0]) if num_rows > 0 else 0
+        for _ in range(max_hops):
+            if current in chain:
+                return chain if chain[0] == current else None
+            chain.append(current)
+
+            task = self.agents[current].task
+            if task is None or task.task_type != "move_box":
+                return None
+            if task.box_char is None:
+                return None
+            gr, gc = task.goal_pos
+            if not (0 <= gr < num_rows and 0 <= gc < num_cols):
+                return None
+            blocker = state.boxes[gr][gc]
+            if not blocker or blocker == task.box_char:
+                return None
+            idx = ord(blocker) - ord("A")
+            if idx < 0 or idx >= 26:
+                return None
+            blocker_color = State.box_colors[idx]
+            if blocker_color is None:
+                return None
+            next_owner = None
+            for a in self.agents:
+                if a.agent_id == current:
+                    continue
+                if State.agent_colors[a.agent_id] == blocker_color:
+                    next_owner = a.agent_id
+                    break
+            if next_owner is None:
+                return None
+            current = next_owner
+        return None
+
+    def _find_park_cell(
+        self,
+        obs_r: int,
+        obs_c: int,
+        state: "State",
+    ) -> tuple[int, int] | None:
+        """
+        Pick a free non-goal cell to temporarily park an obstacle box at, so
+        a deadlock cycle can be broken. The cell must be:
+          • not a wall,
+          • not currently occupied by a box,
+          • not any box's goal cell (so we don't strand a different delivery).
+
+        Pass 1 returns an adjacent cell where the immediate push is feasible
+        (dest free + push-from free of walls/boxes). Pass 2 BFS-walks the
+        reachable region to find any eligible cell.
+        """
+        num_rows = len(State.walls)
+        num_cols = len(State.walls[0]) if num_rows > 0 else 0
+        walls = State.walls
+        goals = State.goals
+        boxes = state.boxes
+
+        def can_host_box(r: int, c: int) -> bool:
+            if not (0 <= r < num_rows and 0 <= c < num_cols):
+                return False
+            if walls[r][c]:
+                return False
+            if boxes[r][c]:
+                return False
+            if goals[r][c]:
+                return False
+            return True
+
+        def is_traversable(r: int, c: int) -> bool:
+            if not (0 <= r < num_rows and 0 <= c < num_cols):
+                return False
+            if walls[r][c]:
+                return False
+            if boxes[r][c]:
+                return False
+            return True
+
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            dest_r, dest_c = obs_r + dr, obs_c + dc
+            push_from_r, push_from_c = obs_r - dr, obs_c - dc
+            if can_host_box(dest_r, dest_c) and is_traversable(push_from_r, push_from_c):
+                return (dest_r, dest_c)
+
+        from collections import deque as _dq
+        visited: set[tuple[int, int]] = {(obs_r, obs_c)}
+        q: _dq = _dq([(obs_r, obs_c)])
+        while q:
+            r, c = q.popleft()
+            if (r, c) != (obs_r, obs_c) and can_host_box(r, c):
+                return (r, c)
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = r + dr, c + dc
+                if (nr, nc) in visited:
+                    continue
+                if 0 <= nr < num_rows and 0 <= nc < num_cols and not walls[nr][nc]:
+                    visited.add((nr, nc))
+                    q.append((nr, nc))
+        return None
+
     def _recent_swap_count(
         self, requester: int, granter: int, obstacle_box: str, window: int = 30,
     ) -> int:
@@ -1680,6 +1827,58 @@ class Manager:
             and current_task.box_char is not None
             and current_task.object_pos == (obs_r, obs_c)
         ):
+            # Closed-cycle break: if the requester→foreign chain closes
+            # back to the requester, every agent in the ring is blocked
+            # by another blocked agent and no task swap progresses. Retask
+            # the foreign agent to PARK its box at a free non-goal cell,
+            # and requeue its original delivery so it resumes once the
+            # cycle has unwound.
+            if (
+                state is not None
+                and requester_id is not None
+                and box_char is not None
+            ):
+                cycle = self._detect_blocking_cycle(state, requester_id)
+                if cycle and foreign_agent_id in cycle and len(cycle) >= 2:
+                    park_cell = self._find_park_cell(obs_r, obs_c, state)
+                    if (
+                        park_cell is not None
+                        and park_cell != (obs_r, obs_c)
+                        and park_cell != current_task.goal_pos
+                    ):
+                        obs_color_local = State.box_colors[ord(box_char) - ord("A")]
+                        if obs_color_local in self.color_tasks:
+                            self.color_tasks[obs_color_local][
+                                "future_box_tasks"
+                            ].appendleft(current_task)
+                        park_task = Task(
+                            task_type="move_box",
+                            object_pos=(obs_r, obs_c),
+                            goal_pos=park_cell,
+                            box_char=box_char,
+                            crucial=False,
+                        )
+                        self.agents[foreign_agent_id].task = park_task
+                        self.agents[foreign_agent_id]._plan = []
+                        self.agents[foreign_agent_id]._plan_index = 0
+                        self._sync_agent_task_state(foreign_agent_id, park_task)
+                        print(
+                            f"  Cycle break: Agent {foreign_agent_id} retasked to "
+                            f"park box {box_char} from ({obs_r},{obs_c}) to "
+                            f"{park_cell}; original delivery requeued. "
+                            f"Cycle was {cycle}.",
+                            file=sys.stderr, flush=True,
+                        )
+                        self._record_swap(
+                            requester=requester_id,
+                            granter=foreign_agent_id,
+                            obstacle_box=box_char,
+                            obstacle_pos=(obs_r, obs_c),
+                            original_task=current_task,
+                            new_task=park_task,
+                            same_color=False,
+                        )
+                        return True
             print(
                 f"  Foreign Agent {foreign_agent_id}: already working on obstacle at ({obs_r},{obs_c}), skip swap.",
                 file=sys.stderr, flush=True,
