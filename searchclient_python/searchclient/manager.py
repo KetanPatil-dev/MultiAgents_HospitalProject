@@ -1802,7 +1802,16 @@ class Manager:
         obs_r, obs_c, obs_color, obstacle_after_box, obstacle_type = obstacle
 
         current_task = self.agents[foreign_agent_id].task
-        box_char = State.get_box_char_from_color(obs_color)
+        # Read the actual char of the obstacle box (handles multi-box-same-
+        # color levels where the color's canonical char would point at an
+        # unrelated box). Fall back to canonical if state unavailable.
+        if (state is not None
+            and 0 <= obs_r < len(state.boxes)
+            and 0 <= obs_c < len(state.boxes[obs_r])
+            and state.boxes[obs_r][obs_c]):
+            box_char = state.boxes[obs_r][obs_c]
+        else:
+            box_char = State.get_box_char_from_color(obs_color)
 
         # If the obstacle box is at its FINAL goal position, refuse to move it.
         # The blocked agent must find another path.
@@ -1927,7 +1936,9 @@ class Manager:
                 return False
 
         clear_goal = self._find_obs_clear_goal(obs_r, obs_c, state)
-        box_char = State.get_box_char_from_color(obs_color)
+        # box_char was set at the top of this function using state lookup;
+        # reuse that here so the clearing task points at the actual obstacle
+        # box rather than the color's canonical char.
         new_task = Task(
             task_type="move_box",
             object_pos=(obs_r, obs_c),
@@ -2168,7 +2179,14 @@ class Manager:
                         self.agents[agent_id].agent_row,
                         self.agents[agent_id].agent_col,
                     ),
-                    box_char=State.get_box_char_from_color(obs_color),
+                    box_char=(
+                        state.boxes[obs_r][obs_c]
+                        if (state is not None
+                            and 0 <= obs_r < len(state.boxes)
+                            and 0 <= obs_c < len(state.boxes[obs_r])
+                            and state.boxes[obs_r][obs_c])
+                        else State.get_box_char_from_color(obs_color)
+                    ),
                 )
 
                 if obstacle_index is not None:
@@ -2222,7 +2240,14 @@ class Manager:
                         self.agents[agent_id].agent_row,
                         self.agents[agent_id].agent_col,
                     ),
-                    box_char=State.get_box_char_from_color(obs_color),
+                    box_char=(
+                        state.boxes[obs_r][obs_c]
+                        if (state is not None
+                            and 0 <= obs_r < len(state.boxes)
+                            and 0 <= obs_c < len(state.boxes[obs_r])
+                            and state.boxes[obs_r][obs_c])
+                        else State.get_box_char_from_color(obs_color)
+                    ),
                 )
 
                 if obstacle_index is not None:
