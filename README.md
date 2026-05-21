@@ -324,7 +324,7 @@ Flags worth knowing:
 
 ## 📜 License
 
-Course project — for academic use. Server JAR and PDFs belong to the DTU 02285 course staff.
+
 
 ---
 
