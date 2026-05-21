@@ -23,7 +23,7 @@ A multi-agent AI planner that coordinates a team of colour-coded robots to move 
 
 ---
 
-## 🎬 The Story (for non-tech folks)
+## 🎬 The Story 
 
 ### The Problem
 
