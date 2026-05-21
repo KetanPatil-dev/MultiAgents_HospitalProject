@@ -6,12 +6,7 @@
 
 A multi-agent AI planner that coordinates a team of colour-coded robots to move boxes around a hospital floor — without bumping into walls, into each other, or into chaos.
 
-[![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white)](https://www.python.org/)
-[![Java](https://img.shields.io/badge/Server-Java-orange?logo=openjdk&logoColor=white)](https://www.java.com/)
-[![Course](https://img.shields.io/badge/DTU-02285%20AI%20%26%20MAS-red)](https://kurser.dtu.dk/course/02285)
-[![Algorithms](https://img.shields.io/badge/Algorithms-A★%20%7C%20CBS%20%7C%20HCA★%20%7C%20Hungarian-9cf)](#-the-algorithms-explained-without-math)
-[![Status](https://img.shields.io/badge/Status-Submission%20Ready-success)]()
-[![Lines](https://img.shields.io/badge/Code-~6%2C100%20lines%20Python-purple)]()
+
 
 </div>
 
@@ -313,19 +308,7 @@ Flags worth knowing:
 
 ---
 
-## 🎓 Context
 
-This is a course project for **DTU 02285 – Artificial Intelligence and Multi-Agent Systems**.
-The hospital domain is the course's canonical benchmark; teams compete each year to solve the same levels under tight time and action budgets.
-
-**What's graded:** the *algorithmic ideas* and a video presentation — **not** the competition result. The competition is a fun add-on, not a gatekeeper.
-
-**Deadlines (2026):**
-* 🗓️ 13 May — custom level due
-* 🗓️ 18 May — competition levels released
-* 🗓️ 21 May — code + report submission
-* 🗓️ 26 May — competition day
-* 🗓️ 1 June — video presentation
 
 ---
 
